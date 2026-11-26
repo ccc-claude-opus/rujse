@@ -24,6 +24,7 @@ pub mod object;
 pub mod parser;
 pub mod regex;
 pub mod regex_props;
+mod regex_props_tables;
 pub mod string;
 pub mod unicode;
 pub mod value;
