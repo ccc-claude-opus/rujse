@@ -6,6 +6,7 @@ pub mod bigint;
 pub mod bigint_impl;
 pub mod buffer;
 pub mod collections;
+pub mod date;
 pub mod error;
 pub mod function;
 pub mod generator;
@@ -37,6 +38,7 @@ pub fn init(vm: &mut Vm) {
     promise::init(vm);
     collections::init(vm);
     regexp::init(vm);
+    date::init(vm);
     bigint::init(vm);
     buffer::init(vm);
     proxy::init(vm);
