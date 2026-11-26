@@ -1,5 +1,7 @@
 //! Unicode character properties (tables generated from the UCD).
 
+pub mod normalize;
+mod normalize_tables;
 mod tables;
 
 pub use tables::UNICODE_VERSION;

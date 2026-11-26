@@ -179,16 +179,27 @@ pub fn init(vm: &mut Vm) {
         }))
     });
     m!("normalize", 0, |vm, this, a, _| {
+        use crate::unicode::normalize::{normalize, Form};
         let s = this_str(vm, this)?;
         let f = arg(a, 0);
-        if !f.is_undefined() {
+        let form = if f.is_undefined() {
+            Form::Nfc
+        } else {
             let fs = vm.to_string(f)?;
-            let form = vm.str(fs).to_rust_lossy();
-            if !matches!(form.as_str(), "NFC" | "NFD" | "NFKC" | "NFKD") {
-                return Err(vm.range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD."));
+            match vm.str(fs).to_rust_lossy().as_str() {
+                "NFC" => Form::Nfc,
+                "NFD" => Form::Nfd,
+                "NFKC" => Form::Nfkc,
+                "NFKD" => Form::Nfkd,
+                _ => return Err(vm.range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD.")),
             }
+        };
+        let units = vm.str(s).to_units();
+        let out = normalize(&units, form);
+        if out == units {
+            return Ok(Value::str(s));
         }
-        Ok(Value::str(s))
+        Ok(vm.new_string_units(&out))
     });
     m!("padEnd", 1, |vm, this, a, _| pad(vm, this, a, false));
     m!("padStart", 1, |vm, this, a, _| pad(vm, this, a, true));

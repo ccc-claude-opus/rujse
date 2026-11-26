@@ -106,6 +106,7 @@ const UNSUPPORTED_FEATURES: &[&str] = &[
     "iterator-chunking",
     "Iterator.prototype.join",
     "import-bytes",
+    "immutable-arraybuffer",
 ];
 
 fn run_parse_only(path: &Path, src: &str, meta: &Meta) -> Result<(), String> {
