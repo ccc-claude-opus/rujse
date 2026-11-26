@@ -26,6 +26,25 @@ fn bin_kind(op: &Op) -> Option<(BinKind, u16)> {
     })
 }
 
+/// Ops that set the accumulator without reading it (so a value left in
+/// it before them is dead).
+fn overwrites_acc(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Ldar(_)
+            | Op::LdaInt(_)
+            | Op::LdaUndef
+            | Op::LdaNull
+            | Op::LdaTrue
+            | Op::LdaFalse
+            | Op::LdaConst(_)
+            | Op::LdaGlobal(_)
+            | Op::GetNamed(..)
+            | Op::Call(..)
+            | Op::New(..)
+    )
+}
+
 fn is_compare(k: BinKind) -> bool {
     matches!(k, BinKind::Lt | BinKind::Le | BinKind::Gt | BinKind::Ge | BinKind::StrictEq | BinKind::StrictNe)
 }
@@ -114,6 +133,17 @@ pub fn optimize(ops: &mut Vec<Op>, handlers: &mut [Handler], lines: &mut Vec<(u3
                     map[i + 1] = out.len() as u32 - 1;
                     map[i + 2] = out.len() as u32 - 1;
                     i += 3;
+                    continue;
+                }
+            }
+        }
+        // Ldar a; Star b; (op that overwrites acc)  ->  Mov a b
+        if fusable(i, 2) && i + 2 < n {
+            if let (Op::Ldar(a), Op::Star(b)) = (&ops[i], &ops[i + 1]) {
+                if overwrites_acc(&ops[i + 2]) {
+                    out.push(Op::Mov(*a, *b));
+                    map[i + 1] = out.len() as u32 - 1;
+                    i += 2;
                     continue;
                 }
             }

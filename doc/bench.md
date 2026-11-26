@@ -41,3 +41,34 @@ cargo build -p wasmbench-boa --profile runtime --target wasm32-unknown-unknown
 | v8-regexp | 159,792,444,912 | 10,786 ms |
 | v8-splay | 11,486,250,427 | 1,109 ms |
 | v8-navier-stokes | 25,404,117,505 | 1,916 ms |
+
+## rujse 對照（2026-11-26，同一台機器）
+
+建置：`cargo build -p wasmbench-rujse --profile runtime --target wasm32-unknown-unknown`。模組 1,885,980 bytes（boa 的 30%），wasmtime 編譯約 0.3–0.5 s（boa 0.9–1.5 s）。
+
+| 微基準 | boa | rujse | boa / rujse |
+|---|---|---|---|
+| `loop`（全域 `var x += k`） | 12,048 | 1,517 | 7.9× |
+| `let_loop`（函式內 `let`） | 1,221 | 388 | 3.1× |
+| `prop`（`p.x = p.x + p.y`） | 2,963 | 992 | 3.0× |
+| `call`（呼叫 `add(s, 1)`） | 4,792 | 1,649 | 2.9× |
+| `closure`（呼叫閉包 `++c`） | 4,231 | 1,478 | 2.9× |
+| `method`（`p.inc()`） | 5,090 | 1,925 | 2.6× |
+| `array`（`push` 後索引加總） | 7,912 | 2,817 | 2.8× |
+| `alloc`（建立一個兩屬性物件） | 7,723 | 3,518 | 2.2× |
+| `string`（`s += 'ab'`） | 302,319（O(n)） | 1,464（rope，O(1)） | — |
+| prelude（每頁啟動） | 483,918,891 | 208,805,351 | 2.3× |
+
+### 目前用到的技術
+
+* **暫存器 + 累加器的 bytecode**，peephole 融合成超指令：`BinRR`（`Ldar; 運算; Star`）、`CmpJmp`（比較加條件跳躍）、`IncReg`/`DecReg`、`Mov`（`Ldar; Star`，後面的指令會覆寫累加器時）。
+* **TDZ 省略**：宣告之後才讀取的 `let`/`const` 不做 TDZ 檢查。
+* **inline cache**（每個 `Code` 每個常數一格，命中前都先驗證）：
+  * 全域：script 層 `let`/`const` 的 cell，或全域物件的資料屬性（dictionary 的 entry 或 shape 的 slot）；新增全域 lexical 綁定時遞增 epoch，讓可能被遮蔽的快取失效。
+  * 具名屬性：自有資料屬性（shape + slot），或直接原型上的資料屬性（接收者 shape、原型身分與原型 shape 都要相同）。
+* **數字快路徑**：int32 運算與比較就地完成；兩個運算元都是數字時走 double 路徑；慢路徑放在不內聯的函式裡。
+* **字串 rope**：長度 ≥ 32 的串接建立 rope 節點，第一次讀取時以迭代方式攤平；GC 不再追蹤已攤平 rope 的子節點。
+
+### 每個 op 的底線成本
+
+switch 直譯器在 wasm 裡每個 op 的分派（取指令、解碼、`br_table`、回到迴圈頂）大約 25–30 條指令，最簡單的 op（`Ldar`、`Star`）合計約 50 條，`let_loop` 的 4 個 op 就是 388 條。要再往 boa 的 1/10（每圈約 120 條）靠近，A 階段只能繼續減少 op 數（更多超指令），根本的解法是 B 階段：把熱函式編成 wasm。

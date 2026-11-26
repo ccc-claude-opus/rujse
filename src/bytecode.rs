@@ -454,6 +454,10 @@ pub enum Ic {
     /// A data property in a shaped object: the slot for objects of
     /// `shape` (for globals, also checked against `epoch`).
     Slot { shape: ShapeId, slot: u32, epoch: u32, writable: bool },
+    /// A data property of the direct prototype: valid while the receiver
+    /// has `shape` (so no own property shadows it), its prototype is
+    /// still `proto` and that has `proto_shape`.
+    Proto { shape: ShapeId, proto: crate::value::ObjId, proto_shape: ShapeId, slot: u32 },
 }
 
 /// A script's source text and name (URL), shared by all its code.

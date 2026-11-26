@@ -5,6 +5,7 @@ pub mod gc;
 pub mod generator;
 pub mod interp;
 pub mod props;
+pub mod ic;
 pub mod realm;
 pub mod scope;
 

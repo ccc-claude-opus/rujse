@@ -147,7 +147,7 @@ impl Vm {
         }
         self.native_depth += 1;
         let depth = self.frames.len();
-        let r = match self.push_frame(fo, c, this, nt, base, argc, kind) {
+        let r = match self.push_frame(fo, c.code.clone(), c.env, this, nt, base, argc, kind) {
             Ok(()) => self.run(depth),
             Err(e) => Err(e),
         };
@@ -157,11 +157,11 @@ impl Vm {
 
     /// Sets up a frame for closure `c` whose arguments start at `base`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn push_frame(&mut self, fo: ObjId, c: &Closure, this: Value, nt: Value, base: usize, argc: usize, kind: FrameKind) -> JsResult<()> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_frame(&mut self, fo: ObjId, code: Rc<Code>, env: Option<EnvId>, this: Value, nt: Value, base: usize, argc: usize, kind: FrameKind) -> JsResult<()> {
         if self.frames.len() >= self.limits.max_frames {
             return Err(self.range_error("Maximum call stack size exceeded"));
         }
-        let code = c.code.clone();
         let nregs = code.nregs as usize;
         let nparams = code.nparams as usize;
         let args = if code.keep_args { Some(self.stack[base..base + argc].to_vec().into_boxed_slice()) } else { None };
@@ -188,7 +188,7 @@ impl Vm {
             code,
             pc: 0,
             base: base as u32,
-            env: c.env,
+            env,
             env_depth: 0,
             this,
             callee: Value::object(fo),
@@ -515,13 +515,20 @@ impl Vm {
                     Op::DeclareEvalVar(_) => {}
                     Op::GetNamed(o, k) => {
                         let obj = r!(o);
-                        let key = name_key!(k);
-                        acc = tri!(self.get_value_prop(obj, key));
+                        acc = match self.prop_ic_load(obj, code.ics[k as usize].get()) {
+                            Some(v) => v,
+                            None => {
+                                let key = name_key!(k);
+                                tri!(self.get_named_cached(&code, k as usize, obj, key))
+                            }
+                        };
                     }
                     Op::SetNamed(o, k) => {
                         let obj = r!(o);
-                        let key = name_key!(k);
-                        tri!(self.put_value_prop(obj, key, acc, code.strict));
+                        if !self.prop_ic_store(obj, code.ics[k as usize].get(), acc) {
+                            let key = name_key!(k);
+                            tri!(self.set_named_cached(&code, k as usize, obj, key, acc));
+                        }
                     }
                     Op::GetKeyed(o) => {
                         let obj = r!(o);
@@ -1300,8 +1307,8 @@ impl Vm {
                 if matches!(c.code.kind, FuncKind::ClassConstructor | FuncKind::DerivedConstructor) {
                     return Err(self.type_error("Class constructor cannot be invoked without 'new'"));
                 }
-                let c = (**c).clone();
-                self.push_frame(fo, &c, this, Value::UNDEFINED, abase, argc, FrameKind::Normal)?;
+                let (code, env) = (c.code.clone(), c.env);
+                self.push_frame(fo, code, env, this, Value::UNDEFINED, abase, argc, FrameKind::Normal)?;
                 Ok(None)
             }
             Class::Native(n) => {
@@ -1327,8 +1334,8 @@ impl Vm {
     fn construct_from_frame(&mut self, callee: Value, abase: usize, argc: usize, nt: Value) -> JsResult<Option<Value>> {
         let fo = callee.as_object().unwrap();
         if let Class::Function(c) = &self.obj(fo).class {
-            let c = (**c).clone();
-            let this = if c.code.kind == FuncKind::DerivedConstructor {
+            let (code, env) = (c.code.clone(), c.env);
+            let this = if code.kind == FuncKind::DerivedConstructor {
                 Value::UNINIT
             } else {
                 let saved_sp = self.sp;
@@ -1337,7 +1344,7 @@ impl Vm {
                 self.sp = saved_sp;
                 Value::object(self.alloc_object(Some(p?), Class::Ordinary))
             };
-            self.push_frame(fo, &c, this, nt, abase, argc, FrameKind::Construct)?;
+            self.push_frame(fo, code, env, this, nt, abase, argc, FrameKind::Construct)?;
             return Ok(None);
         }
         let args: Vec<Value> = self.stack[abase..abase + argc].to_vec();
