@@ -94,4 +94,5 @@ pub fn init(vm: &mut Vm) {
     let op = vm.intrinsics.object_prototype;
     let bp = vm.alloc_object(Some(op), crate::object::Class::Ordinary);
     vm.intrinsics.bigint_prototype = bp;
+    crate::builtins::bigint_impl::init(vm);
 }
