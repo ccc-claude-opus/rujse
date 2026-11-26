@@ -23,8 +23,16 @@ struct Counting;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
+/// Hard cap on live memory: past it allocation fails and the process
+/// aborts at once (the machine must never run out of memory; the input
+/// being run is in target/fuzz-current.js).
+const HARD_CAP: usize = 768 << 20;
+
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        if LIVE.load(Relaxed) + l.size() > HARD_CAP {
+            return std::ptr::null_mut();
+        }
         let p = unsafe { System.alloc(l) };
         if !p.is_null() {
             let now = LIVE.fetch_add(l.size(), Relaxed) + l.size();
@@ -37,6 +45,9 @@ unsafe impl GlobalAlloc for Counting {
         LIVE.fetch_sub(l.size(), Relaxed);
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
+        if new > l.size() && LIVE.load(Relaxed) + (new - l.size()) > HARD_CAP {
+            return std::ptr::null_mut();
+        }
         let q = unsafe { System.realloc(p, l, new) };
         if !q.is_null() {
             if new > l.size() {

@@ -67,3 +67,23 @@ fn zero_copy_binary_data() {
     let s = vm.string_from_utf8("plain ascii");
     assert_eq!(vm.string_as_ascii(s), Some("plain ascii"));
 }
+
+#[test]
+fn budget_stops_loops_inside_natives() {
+    // Natives that drive JS (spread, Array.from, a callback per element)
+    // stop at the budget like a JS loop, and the VM stays usable.
+    let mut vm = rujse::Vm::new();
+    let endless = "const it = { [Symbol.iterator]() { return { next() { return { done: false, value: 1 } } } } };";
+    for src in [
+        "const [...x] = it;",
+        "Array.from(it);",
+        "[...it];",
+        "new Array(1e6).fill(0).forEach(() => { for (const _ of [1]) {} }); Array.from({ length: 1e9 }, () => 0);",
+    ] {
+        vm.budget = Some(5_000_000);
+        let r = vm.eval_script(&format!("{endless} {src}"), "t.js");
+        assert!(matches!(r, Err(rujse::Throw::Terminate)) || matches!(r, Err(rujse::Throw::Value(_))), "{src}");
+    }
+    vm.budget = None;
+    assert_eq!(vm.eval_script("1 + 1", "t.js").unwrap(), rujse::Value::int(2));
+}

@@ -145,6 +145,10 @@ impl Vm {
             self.sp = base - 2;
             return Err(self.range_error("Maximum call stack size exceeded"));
         }
+        if let Err(e) = self.poll_limits() {
+            self.sp = base - 2;
+            return Err(e);
+        }
         self.native_depth += 1;
         let depth = self.frames.len();
         let r = match self.push_frame(fo, c.code.clone(), c.env, this, nt, base, argc, kind) {
@@ -1486,6 +1490,32 @@ impl Vm {
 
     fn safepoint(&mut self, _acc: Value) -> JsResult<()> {
         self.ticks = TICKS;
+        self.check_limits()?;
+        if self.alloc_bytes > self.gc_threshold {
+            self.collect_garbage();
+            if self.heap_estimate() > self.limits.max_heap_bytes {
+                return Err(self.range_error("Out of memory: the heap limit was reached"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Counts one tick where native code drives JS (a call from Rust, an
+    /// iterator step): a loop in a native over a JS iterator or callback
+    /// must stop at the budget, an interrupt or the heap limit like a JS
+    /// loop. No collection here (natives hold unrooted values).
+    #[inline]
+    pub(crate) fn poll_limits(&mut self) -> JsResult<()> {
+        self.ticks -= 1;
+        if self.ticks <= 0 {
+            self.ticks = TICKS;
+            self.check_limits()?;
+        }
+        self.check_allocation()
+    }
+
+    /// The budget, interrupt and debugger part of a safepoint.
+    fn check_limits(&mut self) -> JsResult<()> {
         if self.debugger.is_some() {
             self.debug_safepoint();
         }
@@ -1502,12 +1532,6 @@ impl Vm {
                 return Err(Throw::Terminate);
             }
             *b -= TICKS as u64;
-        }
-        if self.alloc_bytes > self.gc_threshold {
-            self.collect_garbage();
-            if self.heap_estimate() > self.limits.max_heap_bytes {
-                return Err(self.range_error("Out of memory: the heap limit was reached"));
-            }
         }
         Ok(())
     }
@@ -2021,6 +2045,9 @@ impl Vm {
 
     /// IteratorStepValue: Some(value) or None when done.
     pub fn iterator_step(&mut self, it: Value, next: Value) -> JsResult<Option<Value>> {
+        // Callers usually collect the values: count them, and the step.
+        self.alloc_bytes += 16;
+        self.poll_limits()?;
         let r = self.call(next, it, &[])?;
         let Some(ro) = r.as_object() else {
             return Err(self.type_error("Iterator result is not an object"));
