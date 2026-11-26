@@ -22,6 +22,8 @@ pub mod math;
 pub mod module;
 pub mod object;
 pub mod parser;
+pub mod regex;
+pub mod regex_props;
 pub mod string;
 pub mod unicode;
 pub mod value;

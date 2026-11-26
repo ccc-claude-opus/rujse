@@ -52,6 +52,36 @@ def emit(f, name, rs):
     f.write("];\n\n")
 
 
+def case_folding():
+    """Simple case folding (C + S): code point -> folded."""
+    out = []
+    for line in open(os.path.join(ucd, "CaseFolding.txt"), encoding="utf-8"):
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        cp, status, mapping = [x.strip() for x in line.split(";")[:3]]
+        if status in ("C", "S"):
+            out.append((int(cp, 16), int(mapping, 16)))
+    return sorted(out)
+
+
+def simple_upper():
+    """Simple uppercase mapping from UnicodeData.txt (field 12)."""
+    out = []
+    for line in open(os.path.join(ucd, "UnicodeData.txt"), encoding="utf-8"):
+        f = line.split(";")
+        if f[12]:
+            out.append((int(f[0], 16), int(f[12], 16)))
+    return sorted(out)
+
+
+def emit_pairs(f, name, pairs):
+    f.write(f"pub static {name}: &[(u32, u32)] = &[\n")
+    for i in range(0, len(pairs), 4):
+        f.write("    " + " ".join(f"(0x{a:X}, 0x{b:X})," for a, b in pairs[i:i + 4]) + "\n")
+    f.write("];\n\n")
+
+
 tables = {
     "ID_START": ranges_from("DerivedCoreProperties.txt", "ID_Start"),
     "ID_CONTINUE": ranges_from("DerivedCoreProperties.txt", "ID_Continue"),
@@ -64,4 +94,6 @@ with open("src/unicode/tables.rs", "w", encoding="utf-8") as f:
     f.write(f"pub const UNICODE_VERSION: &str = \"{version()}\";\n\n")
     for k, v in tables.items():
         emit(f, k, v)
+    emit_pairs(f, "CASE_FOLD", case_folding())
+    emit_pairs(f, "SIMPLE_UPPER", simple_upper())
 print("wrote src/unicode/tables.rs", {k: len(v) for k, v in tables.items()})
