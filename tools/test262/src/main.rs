@@ -94,6 +94,7 @@ const UNSUPPORTED_FEATURES: &[&str] = &[
     "Atomics.waitAsync",
     "ShadowRealm",
     "import-text",
+    "Temporal",
     "import-bytes",
 ];
 

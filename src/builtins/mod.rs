@@ -2,6 +2,8 @@
 
 pub mod array;
 pub mod array_methods;
+pub mod atomics;
+pub mod base64;
 pub mod bigint;
 pub mod bigint_impl;
 pub mod buffer;
@@ -19,6 +21,7 @@ pub mod promise;
 pub mod proxy;
 pub mod regexp;
 pub mod string;
+pub mod typed_array_methods;
 
 use crate::vm::Vm;
 
