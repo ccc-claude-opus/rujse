@@ -58,7 +58,15 @@ impl Vm {
 
     /// Approximate live heap size in bytes.
     pub fn heap_estimate(&self) -> usize {
-        let strings: usize = self.strings.iter().map(|(_, s)| 32 + s.len() * if s.is_latin1() { 1 } else { 2 }).sum();
+        // An unflattened rope holds only its two children's ids.
+        let strings: usize = self
+            .strings
+            .iter()
+            .map(|(_, s)| match s.unflattened() {
+                Some(_) => 48,
+                None => 32 + s.len() * if s.is_latin1() { 1 } else { 2 },
+            })
+            .sum();
         let objects: usize = self.objects.iter().map(|(_, o)| 96 + o.elements.capacity() * 8).sum();
         objects + strings + self.envs.len() * 64 + self.stack.len() * 8
     }
