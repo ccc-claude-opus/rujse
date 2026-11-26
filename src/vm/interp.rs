@@ -265,7 +265,8 @@ impl Vm {
             let code = self.frames[fi].code.clone();
             let base = self.frames[fi].base as usize;
             let mut pc = self.frames[fi].pc as usize;
-            let ops: &[core::cell::Cell<Op>] = &code.ops;
+            let body = code.body();
+            let ops: &[core::cell::Cell<Op>] = &body.ops;
             #[allow(unused_assignments)]
             let mut error: Throw = Throw::Terminate;
             macro_rules! r {
@@ -275,7 +276,7 @@ impl Vm {
             }
             macro_rules! konst {
                 ($k:expr) => {
-                    match &code.consts[$k as usize] {
+                    match &body.consts[$k as usize] {
                         Const::Value(v) => *v,
                         _ => Value::UNDEFINED,
                     }
@@ -320,7 +321,7 @@ impl Vm {
                         // Run the original instruction: put it back until
                         // the next safepoint (any way back to this pc
                         // passes one: a backward jump or a call).
-                        let orig = code.patches.borrow()[i as usize].op;
+                        let orig = body.patches.borrow()[i as usize].op;
                         ops[pc].set(orig);
                         self.debug_rearm(&code, pc as u32);
                     }
@@ -382,7 +383,7 @@ impl Vm {
                     Op::LdaUninit => acc = Value::UNINIT,
                     Op::LdaInt(i) => acc = Value::int(i),
                     Op::LdaConst(k) => {
-                        acc = match &code.consts[k as usize] {
+                        acc = match &body.consts[k as usize] {
                             Const::Value(v) => *v,
                             Const::BigInt(s) => tri!(crate::builtins::bigint::from_literal(self, s)),
                             _ => Value::UNDEFINED,
@@ -403,7 +404,7 @@ impl Vm {
                         let parent = self.frames[fi].env;
                         let e = self.new_env(n as usize, Value::UNDEFINED, parent);
                         if names != u32::MAX {
-                            if let Const::Names(ns) = &code.consts[names as usize] {
+                            if let Const::Names(ns) = &body.consts[names as usize] {
                                 self.envs.get_mut(e.0).names = Some(ns.clone());
                             }
                         }
@@ -485,19 +486,19 @@ impl Vm {
                         tri!(Err(self.type_error(&alloc::format!("Assignment to constant variable '{n}'."))));
                     }
                     Op::LdaGlobal(k) => {
-                        acc = match self.global_ic_load(code.ics[k as usize].get()) {
+                        acc = match self.global_ic_load(body.ics[k as usize].get()) {
                             Some(v) => v,
                             None => tri!(self.get_global_cached(&code, k as usize, konst!(k).as_string().unwrap(), true)),
                         }
                     }
                     Op::LdaGlobalOrUndef(k) => {
-                        acc = match self.global_ic_load(code.ics[k as usize].get()) {
+                        acc = match self.global_ic_load(body.ics[k as usize].get()) {
                             Some(v) => v,
                             None => tri!(self.get_global_cached(&code, k as usize, konst!(k).as_string().unwrap(), false)),
                         }
                     }
                     Op::StaGlobal(k, strict) => {
-                        if !self.global_ic_store(code.ics[k as usize].get(), acc) {
+                        if !self.global_ic_store(body.ics[k as usize].get(), acc) {
                             tri!(self.set_global_cached(&code, k as usize, konst!(k).as_string().unwrap(), acc, strict));
                         }
                     }
@@ -512,7 +513,7 @@ impl Vm {
                         }
                     }
                     Op::DeclareGlobals(k) => {
-                        let Const::Globals(d) = &code.consts[k as usize] else { unreachable!() };
+                        let Const::Globals(d) = &body.consts[k as usize] else { unreachable!() };
                         let d = d.clone();
                         self.frames[fi].pc = pc as u32;
                         tri!(self.declare_globals(&d, fi));
@@ -529,7 +530,7 @@ impl Vm {
                     Op::DeclareEvalVar(_) => {}
                     Op::GetNamed(o, k, ic) => {
                         let obj = r!(o);
-                        acc = match self.prop_ic_load(obj, code.ics[ic as usize].get()) {
+                        acc = match self.prop_ic_load(obj, body.ics[ic as usize].get()) {
                             Some(v) => v,
                             None => {
                                 let key = name_key!(k);
@@ -539,7 +540,7 @@ impl Vm {
                     }
                     Op::SetNamed(o, k, ic) => {
                         let obj = r!(o);
-                        if !self.prop_ic_store(obj, code.ics[ic as usize].get(), acc) {
+                        if !self.prop_ic_store(obj, body.ics[ic as usize].get(), acc) {
                             let key = name_key!(k);
                             tri!(self.set_named_cached(&code, ic as usize, obj, key, acc));
                         }
@@ -637,7 +638,7 @@ impl Vm {
                     }
                     Op::DefineNamed(o, k, ic) => {
                         let obj = r!(o).as_object().unwrap();
-                        if !self.define_ic(obj, code.ics[ic as usize].get(), acc) {
+                        if !self.define_ic(obj, body.ics[ic as usize].get(), acc) {
                             let key = name_key!(k);
                             tri!(self.define_named_cached(&code, ic as usize, obj, key, acc));
                         }
@@ -693,7 +694,7 @@ impl Vm {
                         acc = tri!(crate::builtins::regexp::create(self, p, f));
                     }
                     Op::Closure(i) => {
-                        let child = code.children[i as usize].clone();
+                        let child = body.children[i as usize].clone();
                         let env = self.frames[fi].env;
                         let home = if child.kind == FuncKind::Arrow { self.callee_home(fi) } else { None };
                         acc = Value::object(self.make_closure(child, env, home));
@@ -711,7 +712,7 @@ impl Vm {
                     }
                     Op::TemplateObject(i) => acc = self.template_object(&code, i),
                     Op::CreateClass { code: ci, proto, name } => {
-                        let child = code.children[ci as usize].clone();
+                        let child = body.children[ci as usize].clone();
                         let env = self.frames[fi].env;
                         let name = konst!(name);
                         let (f, p) = tri!(self.create_class(child, env, acc, name));
@@ -1241,7 +1242,7 @@ impl Vm {
                     Op::CreateArguments(k) => {
                         let map = if k == u32::MAX {
                             None
-                        } else if let Const::Names(m) = &code.consts[k as usize] {
+                        } else if let Const::Names(m) = &body.consts[k as usize] {
                             Some(m.clone())
                         } else {
                             None
@@ -1441,7 +1442,7 @@ impl Vm {
             if let Throw::Value(_) = error {
                 let f = &self.frames[fi];
                 let pc = f.pc.saturating_sub(1);
-                let found = f.code.handlers.iter().find(|h| h.start <= pc && pc < h.end).copied();
+                let found = f.code.body().handlers.iter().find(|h| h.start <= pc && pc < h.end).copied();
                 if let Some(h) = found {
                     while self.frames[fi].env_depth > h.env_depth {
                         let e = self.frames[fi].env.unwrap();
@@ -1490,6 +1491,9 @@ impl Vm {
         }
         if self.interrupt.get() {
             self.interrupt.set(false);
+            return Err(Throw::Terminate);
+        }
+        if self.host.as_mut().is_some_and(|h| h.interrupt_requested()) {
             return Err(Throw::Terminate);
         }
         if let Some(b) = self.budget.as_mut() {
@@ -1777,7 +1781,7 @@ impl Vm {
         if let Some(&v) = self.templates.get(&key) {
             return v;
         }
-        let Const::Template(items) = &code.consts[i as usize] else { unreachable!() };
+        let Const::Template(items) = &code.body().consts[i as usize] else { unreachable!() };
         let items = items.clone();
         let cooked: Vec<Value> = items.iter().map(|x| x.0).collect();
         let raw: Vec<Value> = items.iter().map(|x| x.1).collect();

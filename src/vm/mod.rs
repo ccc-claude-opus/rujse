@@ -664,6 +664,22 @@ impl Vm {
         v.kind()
     }
 
+    /// Makes the VM usable again after the host abandoned a call into it
+    /// midway (a trap or fuel exhaustion: the call never returned). The
+    /// abandoned frames are dropped; the heap stays consistent. Call it
+    /// before the next call when the previous one did not return.
+    pub fn recover(&mut self) {
+        self.frames.clear();
+        self.sp = 0;
+        self.native_depth = 0;
+        self.native_roots.clear();
+        self.pending_acc = None;
+        self.gen_signal = interp::GenSignal::None;
+        self.current_native = Value::UNDEFINED;
+        self.join_stack.clear();
+        self.ticks = 1024;
+    }
+
     pub fn take_args_vec(&mut self) -> Vec<Value> {
         self.arg_pool.pop().unwrap_or_default()
     }

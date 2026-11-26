@@ -94,7 +94,7 @@ impl Vm {
         let v = self.get_value_prop(base, key)?;
         let e = self.prop_ic_entry(base, key);
         if e != Ic::Empty {
-            code.ics[k].set(e);
+            code.body().ics[k].set(e);
         }
         Ok(v)
     }
@@ -103,7 +103,7 @@ impl Vm {
     pub fn set_named_cached(&mut self, code: &Code, k: usize, base: Value, key: Key, v: Value) -> JsResult<()> {
         self.put_value_prop(base, key, v, code.strict)?;
         if let e @ Ic::Slot { writable: true, .. } = self.prop_ic_entry(base, key) {
-            code.ics[k].set(e);
+            code.body().ics[k].set(e);
         }
         Ok(())
     }
@@ -139,7 +139,7 @@ impl Vm {
             let to = *to;
             let s = self.shape(to);
             if s.parent == Some(from) && s.key == Some(key) && s.attrs == attr::DEFAULT {
-                code.ics[k].set(Ic::Add { from, to });
+                code.body().ics[k].set(Ic::Add { from, to });
             }
         }
         Ok(())

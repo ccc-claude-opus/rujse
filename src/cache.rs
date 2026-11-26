@@ -16,7 +16,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
-use crate::bytecode::{Code, Const, DebugScope, EvalScope, GlobalDecls, Handler, Op};
+use crate::bytecode::{Body, Code, CodeHeader, Const, DebugScope, EvalScope, GlobalDecls, Handler, Op, Source};
 use crate::op_codec::*;
 use crate::string::hash_units;
 use crate::value::{Kind, Value};
@@ -131,15 +131,14 @@ impl Reader<'_> {
 
 // ----- encoding -------------------------------------------------------------
 
-struct Enc<'v> {
-    vm: &'v Vm,
+struct Enc {
     w: Writer,
     /// Strings by first use: StrId -> table index.
     table: alloc::collections::BTreeMap<crate::value::StrId, u32>,
     strings: Vec<crate::value::StrId>,
 }
 
-impl Enc<'_> {
+impl Enc {
     fn value(&mut self, v: Value) -> Option<()> {
         match v.kind() {
             Kind::Undefined => self.w.u8(0),
@@ -178,14 +177,35 @@ impl Enc<'_> {
         Some(())
     }
 
+    /// A code unit: its header, then its body as a length-prefixed block
+    /// (so loading can skip bodies until they are needed).
     fn code(&mut self, c: &Code) -> Option<()> {
         let w = &mut self.w;
-        w.u32(c.ops.len() as u32);
-        for pc in 0..c.ops.len() {
+        w.u16(c.nregs);
+        w.u16(c.nparams);
+        w.u16(c.length);
+        self.value(c.name)?;
+        let w = &mut self.w;
+        w.u8(func_kind_to_u8(c.kind));
+        w.u8(c.strict as u8 | (c.is_async as u8) << 1 | (c.is_generator as u8) << 2 | (c.keep_args as u8) << 3 | (c.has_fields as u8) << 4);
+        w.u32(c.src_start);
+        w.u32(c.src_end);
+        let outer = core::mem::take(&mut self.w);
+        self.body(c)?;
+        let block = core::mem::replace(&mut self.w, outer);
+        self.w.bytes(&block.out);
+        Some(())
+    }
+
+    fn body(&mut self, c: &Code) -> Option<()> {
+        let b = c.body();
+        let w = &mut self.w;
+        w.u32(b.ops.len() as u32);
+        for pc in 0..b.ops.len() {
             put_op(w, c.op_at(pc));
         }
-        w.u32(c.consts.len() as u32);
-        for k in &c.consts {
+        w.u32(b.consts.len() as u32);
+        for k in &b.consts {
             match k {
                 Const::Value(v) => {
                     self.w.u8(0);
@@ -248,36 +268,27 @@ impl Enc<'_> {
                 }
             }
         }
-        self.w.u32(c.children.len() as u32);
-        for ch in &c.children {
+        self.w.u32(b.children.len() as u32);
+        for ch in &b.children {
             self.code(ch)?;
         }
         let w = &mut self.w;
-        w.u32(c.handlers.len() as u32);
-        for h in &c.handlers {
+        w.u32(b.handlers.len() as u32);
+        for h in &b.handlers {
             w.u32(h.start);
             w.u32(h.end);
             w.u32(h.target);
             w.u16(h.reg);
             w.u16(h.env_depth);
         }
-        w.u16(c.nregs);
-        w.u16(c.nparams);
-        w.u16(c.length);
-        self.value(c.name)?;
-        let w = &mut self.w;
-        w.u8(func_kind_to_u8(c.kind));
-        w.u8(c.strict as u8 | (c.is_async as u8) << 1 | (c.is_generator as u8) << 2 | (c.keep_args as u8) << 3 | (c.has_fields as u8) << 4);
-        w.u32(c.lines.len() as u32);
-        for &(pc, l, col) in &c.lines {
+        w.u32(b.lines.len() as u32);
+        for &(pc, l, col) in &b.lines {
             w.u32(pc);
             w.u32(l);
             w.u32(col);
         }
-        w.u32(c.src_start);
-        w.u32(c.src_end);
-        w.u32(c.scopes.len() as u32);
-        for s in c.scopes.iter() {
+        w.u32(b.scopes.len() as u32);
+        for s in b.scopes.iter() {
             w.u32(s.start);
             w.u32(s.end);
             match s.env_at {
@@ -312,14 +323,23 @@ fn opt_u16(w: &mut Writer, v: Option<u16>) {
 
 // ----- decoding -------------------------------------------------------------
 
-struct Dec<'a, 'v> {
-    vm: &'v mut Vm,
-    r: Reader<'a>,
-    source: Rc<crate::bytecode::Source>,
-    strings: Vec<Value>,
+/// A code body not decoded yet: where it is in the cache entry.
+pub struct LazyBody {
+    data: Rc<[u8]>,
+    start: usize,
+    end: usize,
+    strings: Rc<[Value]>,
+    source: Rc<Source>,
 }
 
-impl Dec<'_, '_> {
+struct Dec<'a> {
+    r: Reader<'a>,
+    data: &'a Rc<[u8]>,
+    strings: &'a Rc<[Value]>,
+    source: &'a Rc<Source>,
+}
+
+impl Dec<'_> {
     fn value(&mut self) -> Option<Value> {
         Some(match self.r.u8()? {
             0 => Value::UNDEFINED,
@@ -347,11 +367,44 @@ impl Dec<'_, '_> {
         })
     }
 
+    /// A code unit's header; its body stays encoded.
     fn code(&mut self) -> Option<Rc<Code>> {
+        let (nregs, nparams, length) = (self.r.u16()?, self.r.u16()?, self.r.u16()?);
+        let name = self.value()?;
+        let kind = func_kind_from_u8(self.r.u8()?)?;
+        let flags = self.r.u8()?;
+        let (src_start, src_end) = (self.r.u32()?, self.r.u32()?);
+        let n = self.r.len()?;
+        let start = self.r.pos;
+        self.r.pos += n;
+        let header = CodeHeader {
+            nregs,
+            nparams,
+            length,
+            name,
+            kind,
+            strict: flags & 1 != 0,
+            is_async: flags & 2 != 0,
+            is_generator: flags & 4 != 0,
+            keep_args: flags & 8 != 0,
+            has_fields: flags & 16 != 0,
+            source: self.source.clone(),
+            src_start,
+            src_end,
+        };
+        let lazy = LazyBody { data: self.data.clone(), start, end: start + n, strings: self.strings.clone(), source: self.source.clone() };
+        Some(Rc::new(Code::new_lazy(header, lazy)))
+    }
+
+    fn body(&mut self) -> Option<Body> {
         let n = self.r.len()?;
         let mut ops = Vec::with_capacity(n);
         for _ in 0..n {
-            ops.push(Cell::new(get_op(&mut self.r)?));
+            let op = get_op(&mut self.r)?;
+            if let Op::Break(_) = op {
+                return None;
+            }
+            ops.push(Cell::new(op));
         }
         let n = self.r.len()?;
         let mut consts = Vec::with_capacity(n);
@@ -423,15 +476,10 @@ impl Dec<'_, '_> {
         for _ in 0..self.r.len()? {
             handlers.push(Handler { start: self.r.u32()?, end: self.r.u32()?, target: self.r.u32()?, reg: self.r.u16()?, env_depth: self.r.u16()? });
         }
-        let (nregs, nparams, length) = (self.r.u16()?, self.r.u16()?, self.r.u16()?);
-        let name = self.value()?;
-        let kind = func_kind_from_u8(self.r.u8()?)?;
-        let flags = self.r.u8()?;
         let mut lines = Vec::new();
         for _ in 0..self.r.len()? {
             lines.push((self.r.u32()?, self.r.u32()?, self.r.u32()?));
         }
-        let (src_start, src_end) = (self.r.u32()?, self.r.u32()?);
         let mut scopes = Vec::new();
         for _ in 0..self.r.len()? {
             let (start, end) = (self.r.u32()?, self.r.u32()?);
@@ -449,42 +497,32 @@ impl Dec<'_, '_> {
             let [regs, slots] = lists;
             scopes.push(DebugScope { start, end, env_at, function, regs, slots });
         }
-        if ops.iter().any(|o| matches!(o.get(), Op::Break(_))) {
-            return None;
-        }
         let ics = crate::compiler::assign_ics(&mut ops, consts.len());
-        Some(Rc::new(Code {
+        Some(Body {
             ops: ops.into_boxed_slice(),
             consts,
             children,
             handlers,
-            nregs,
-            nparams,
-            length,
-            name,
-            kind,
-            strict: flags & 1 != 0,
-            is_async: flags & 2 != 0,
-            is_generator: flags & 4 != 0,
-            keep_args: flags & 8 != 0,
-            has_fields: flags & 16 != 0,
             lines,
-            source: self.source.clone(),
-            src_start,
-            src_end,
-            calls: Cell::new(0),
             ics,
             patches: Default::default(),
             scopes: scopes.into_boxed_slice(),
-        }))
+        })
     }
+}
+
+/// Decodes a body left encoded by `load_cached`.
+pub fn decode_body(l: LazyBody) -> Option<Body> {
+    let mut d = Dec { r: Reader { data: l.data.get(..l.end)?, pos: l.start }, data: &l.data, strings: &l.strings, source: &l.source };
+    let b = d.body()?;
+    if d.r.pos == l.end { Some(b) } else { None }
 }
 
 impl Vm {
     /// Compiles a script and returns its bytecode cache entry.
     pub fn compile_to_cache(&mut self, src: &str, name: &str) -> JsResult<Vec<u8>> {
         let code = self.compile_script(src, name)?;
-        let mut e = Enc { vm: self, w: Writer::default(), table: Default::default(), strings: Vec::new() };
+        let mut e = Enc { w: Writer::default(), table: Default::default(), strings: Vec::new() };
         if e.code(&code).is_none() {
             return Err(self.type_error("script cannot be cached"));
         }
@@ -552,7 +590,10 @@ impl Vm {
             }
             strings.push(Value::str(self.intern_units(&units)));
         }
-        let mut d = Dec { vm: self, r, source, strings };
+        // Function bodies decode on first use, from a shared copy of the entry.
+        let data: Rc<[u8]> = bytes.into();
+        let strings: Rc<[Value]> = strings.into();
+        let mut d = Dec { r: Reader { data: &data, pos: r.pos }, data: &data, strings: &strings, source: &source };
         let code = d.code()?;
         if d.r.pos != bytes.len() {
             return None;

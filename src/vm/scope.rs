@@ -105,23 +105,23 @@ impl Vm {
 
     /// `LdaGlobal`/`LdaGlobalOrUndef` with the cache of constant `k`.
     pub fn get_global_cached(&mut self, code: &Code, k: usize, name: StrId, throw: bool) -> JsResult<Value> {
-        if let Some(v) = self.global_ic_load(code.ics[k].get()) {
+        if let Some(v) = self.global_ic_load(code.body().ics[k].get()) {
             return Ok(v);
         }
         let v = self.get_global(name, throw)?;
         let e = self.global_ic_entry(name);
-        code.ics[k].set(e);
+        code.body().ics[k].set(e);
         Ok(v)
     }
 
     /// `StaGlobal` with the cache of constant `k`.
     pub fn set_global_cached(&mut self, code: &Code, k: usize, name: StrId, v: Value, strict: bool) -> JsResult<()> {
-        if self.global_ic_store(code.ics[k].get(), v) {
+        if self.global_ic_store(code.body().ics[k].get(), v) {
             return Ok(());
         }
         self.set_global(name, v, strict)?;
         let e = self.global_ic_entry(name);
-        code.ics[k].set(e);
+        code.body().ics[k].set(e);
         Ok(())
     }
 
@@ -229,7 +229,7 @@ impl Vm {
         let code = self.frames[fi].code.clone();
         let env = self.frames[fi].env;
         for &(n, idx) in &d.functions {
-            let child = code.children[idx as usize].clone();
+            let child = code.body().children[idx as usize].clone();
             let f = Value::object(self.make_closure(child, env, None));
             let s = n.as_string().unwrap();
             match var_env {
@@ -431,7 +431,7 @@ impl Vm {
     pub fn direct_eval(&mut self, fi: usize, arg: Value, k: u32) -> JsResult<Value> {
         let Some(s) = arg.as_string() else { return Ok(arg) };
         let code = self.frames[fi].code.clone();
-        let Const::EvalScope(scope) = &code.consts[k as usize] else { unreachable!() };
+        let Const::EvalScope(scope) = &code.body().consts[k as usize] else { unreachable!() };
         let scope = scope.clone();
         let src = self.str(s).to_rust_lossy();
         let ctx = crate::parser::EvalCtx {

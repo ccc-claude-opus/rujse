@@ -271,7 +271,7 @@ impl Vm {
         let mut out = Vec::new();
         // Local: register variables of the scopes live at pc (innermost
         // first: later-starting scopes are nested in earlier ones).
-        let mut live: Vec<&crate::bytecode::DebugScope> = f.code.scopes.iter().filter(|s| s.start <= pc && pc < s.end).collect();
+        let mut live: Vec<&crate::bytecode::DebugScope> = f.code.body().scopes.iter().filter(|s| s.start <= pc && pc < s.end).collect();
         live.sort_by(|a, b| b.start.cmp(&a.start).then(a.end.cmp(&b.end)));
         let mut local = ScopeInfo { kind: ScopeType::Local, variables: Vec::new(), object: None };
         let mut seen: Vec<Rc<str>> = Vec::new();
@@ -396,7 +396,7 @@ impl Vm {
     /// An `Op::Break` was reached at `pc` of frame `fi`.
     pub(crate) fn debug_break(&mut self, fi: usize, pc: usize, patch: u32, _acc: Value) -> JsResult<()> {
         let code = self.frames[fi].code.clone();
-        let p = code.patches.borrow()[patch as usize];
+        let p = code.body().patches.borrow()[patch as usize];
         let Some(d) = self.debugger.as_ref() else { return Ok(()) };
         if d.handler.is_none() {
             return Ok(()); // inside a pause (evaluating)
@@ -474,8 +474,8 @@ impl Vm {
         if d.armed.iter().any(|a| Rc::ptr_eq(a, c)) {
             return;
         }
-        for &(pc, _, _) in c.lines.iter() {
-            if (pc as usize) < c.ops.len() {
+        for &(pc, _, _) in c.body().lines.iter() {
+            if (pc as usize) < c.body().ops.len() {
                 set_patch(c, pc, |p| p.step = true);
             }
         }
@@ -541,7 +541,7 @@ impl Vm {
         self.frames.iter().any(|f| {
             // pc stands after the throwing (or calling) instruction.
             let pc = f.pc.saturating_sub(1);
-            f.code.handlers.iter().any(|h| h.start <= pc && pc < h.end)
+            f.code.body().handlers.iter().any(|h| h.start <= pc && pc < h.end)
         })
     }
 }
@@ -594,15 +594,15 @@ fn resolve(bp: &mut Breakpoint, code: &Rc<Code>) {
     let mut best: Option<(Rc<Code>, u32, u32)> = None;
     let mut stack = alloc::vec![code.clone()];
     while let Some(c) = stack.pop() {
-        for &(pc, line, col) in c.lines.iter() {
-            if line != bp.line || (pc as usize) >= c.ops.len() || bp.column.is_some_and(|m| col < m) {
+        for &(pc, line, col) in c.body().lines.iter() {
+            if line != bp.line || (pc as usize) >= c.body().ops.len() || bp.column.is_some_and(|m| col < m) {
                 continue;
             }
             if best.as_ref().is_none_or(|b| col < b.2) {
                 best = Some((c.clone(), pc, col));
             }
         }
-        stack.extend(c.children.iter().cloned());
+        stack.extend(c.body().children.iter().cloned());
     }
     if let Some((c, pc, col)) = best {
         let id = bp.id;
@@ -614,8 +614,8 @@ fn resolve(bp: &mut Breakpoint, code: &Rc<Code>) {
 /// Changes the patch at `pc` (creating it), and restores the original
 /// instruction when nothing is left on it.
 fn set_patch(c: &Code, pc: u32, f: impl FnOnce(&mut Patch)) {
-    let cell = &c.ops[pc as usize];
-    let mut patches = c.patches.borrow_mut();
+    let cell = &c.body().ops[pc as usize];
+    let mut patches = c.body().patches.borrow_mut();
     let i = match cell.get() {
         Op::Break(i) => i as usize,
         op => {
@@ -638,7 +638,7 @@ fn set_patch(c: &Code, pc: u32, f: impl FnOnce(&mut Patch)) {
 }
 
 fn disarm(c: &Code) {
-    let pcs: Vec<u32> = c.patches.borrow().iter().filter(|p| p.step).map(|p| p.pc).collect();
+    let pcs: Vec<u32> = c.body().patches.borrow().iter().filter(|p| p.step).map(|p| p.pc).collect();
     for pc in pcs {
         set_patch(c, pc, |p| p.step = false);
     }
@@ -647,9 +647,9 @@ fn disarm(c: &Code) {
 fn unpatch_all(c: &Rc<Code>) {
     let mut stack = alloc::vec![c.clone()];
     while let Some(c) = stack.pop() {
-        for p in c.patches.borrow().iter() {
-            c.ops[p.pc as usize].set(p.op);
+        for p in c.body().patches.borrow().iter() {
+            c.body().ops[p.pc as usize].set(p.op);
         }
-        stack.extend(c.children.iter().cloned());
+        stack.extend(c.body().children.iter().cloned());
     }
 }

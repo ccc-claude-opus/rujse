@@ -300,6 +300,25 @@ impl fmt::Debug for Value {
     }
 }
 
+
+impl From<i32> for Value {
+    fn from(i: i32) -> Value {
+        Value::int(i)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(f: f64) -> Value {
+        Value::number(f)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(b: bool) -> Value {
+        Value::bool(b)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,10 +45,10 @@ fn main() {
             fn dump(c: &rujse::bytecode::Code, depth: usize) {
                 let pad = "  ".repeat(depth);
                 println!("{pad}== code nregs={} nparams={}", c.nregs, c.nparams);
-                for (i, op) in c.ops.iter().enumerate() {
+                for (i, op) in c.body().ops.iter().enumerate() {
                     println!("{pad}{i:4} {op:?}");
                 }
-                for ch in &c.children {
+                for ch in &c.body().children {
                     dump(ch, depth + 1);
                 }
             }

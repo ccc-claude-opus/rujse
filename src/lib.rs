@@ -53,6 +53,12 @@ pub trait Host {
     fn promise_rejection(&mut self, _promise: Value, _handled: bool) {}
     /// Output of `print` / console.
     fn print(&mut self, _text: &str) {}
+    /// Polled at safepoints (about every thousand instructions, and at
+    /// calls and loop back edges): true stops the running script with an
+    /// uncatchable termination (the VM stays usable).
+    fn interrupt_requested(&mut self) -> bool {
+        false
+    }
     /// Resolves a module specifier against the importing module/script
     /// URL; the result identifies the module (its URL).
     fn resolve_module(&mut self, _referrer: Option<&str>, _specifier: &str) -> Result<alloc::string::String, alloc::string::String> {

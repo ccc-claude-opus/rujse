@@ -13,6 +13,15 @@ impl Vm {
         Value::object(crate::builtins::buffer::buffer_from_vec(self, data))
     }
 
+    /// A `Uint8Array` over a new ArrayBuffer that owns `data` (no copy).
+    pub fn uint8_array_from_vec(&mut self, data: Vec<u8>) -> Value {
+        let len = data.len();
+        let buffer = crate::builtins::buffer::buffer_from_vec(self, data);
+        let proto = self.intrinsics.uint8_array_prototype;
+        let ta = crate::builtins::buffer::TypedArrayData { buffer, kind: 1, offset: 0, length: Some(len) };
+        Value::object(self.alloc_object(Some(proto), Class::TypedArray(alloc::boxed::Box::new(ta))))
+    }
+
     /// The bytes of an ArrayBuffer or SharedArrayBuffer (None if `v` is
     /// not one, or detached). Valid until JS runs again.
     pub fn array_buffer_bytes(&self, v: Value) -> Option<&[u8]> {

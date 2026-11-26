@@ -712,11 +712,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
             .collect();
         let mut ops: Vec<Cell<Op>> = f.ops.into_iter().map(Cell::new).collect();
         let ics = assign_ics(&mut ops, f.consts.len());
-        let code = Rc::new(Code {
-            ops: ops.into_boxed_slice(),
-            consts: f.consts,
-            children: f.children,
-            handlers: f.handlers,
+        let header = crate::bytecode::CodeHeader {
             nregs: f.nregs.max(nparams),
             nparams,
             length,
@@ -727,15 +723,21 @@ impl<'a, 'v> Compiler<'a, 'v> {
             is_generator: f.is_generator,
             keep_args,
             has_fields,
-            lines: f.lines,
             source: self.source.clone(),
             src_start: src.0,
             src_end: src.1,
-            calls: Cell::new(0),
+        };
+        let body = crate::bytecode::Body {
+            ops: ops.into_boxed_slice(),
+            consts: f.consts,
+            children: f.children,
+            handlers: f.handlers,
+            lines: f.lines,
             ics,
             patches: Default::default(),
             scopes,
-        });
+        };
+        let code = Rc::new(Code::new(header, body));
         if self.funcs.is_empty() {
             crate::debug::code_compiled(self.vm, &code);
         }

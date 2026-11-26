@@ -409,14 +409,7 @@ pub enum FuncKind {
 }
 
 /// A compiled function, script, module or eval body.
-#[derive(Debug)]
 pub struct Code {
-    /// The instructions. Cells so the debugger can patch a `Break` over
-    /// an instruction (`op_at` gives the original).
-    pub ops: Box<[Cell<Op>]>,
-    pub consts: Vec<Const>,
-    pub children: Vec<Rc<Code>>,
-    pub handlers: Vec<Handler>,
     pub nregs: u16,
     pub nparams: u16,
     /// Value of `length`.
@@ -430,23 +423,112 @@ pub struct Code {
     pub keep_args: bool,
     /// Has `InitFields` at entry (base class constructor with fields).
     pub has_fields: bool,
-    /// Source positions: (pc, line, column), sorted by pc.
-    pub lines: Vec<(u32, u32, u32)>,
     pub source: Rc<Source>,
     /// Byte range of the function source (for `toString`).
     pub src_start: u32,
     pub src_end: u32,
     /// Times called; hot code becomes a JIT candidate (later).
     pub calls: Cell<u32>,
-    /// Inline caches, one per constant: the ops that look a name up
-    /// (globals, named properties) cache where they found it under the
-    /// index of the name's constant.
+    /// The instructions and tables, decoded on first use for code loaded
+    /// from the bytecode cache (most functions of a big script never run).
+    body: core::cell::OnceCell<Body>,
+    lazy: core::cell::RefCell<Option<crate::cache::LazyBody>>,
+}
+
+/// What a code unit runs: instructions, constants, nested functions and
+/// the tables that go with them.
+#[derive(Debug)]
+pub struct Body {
+    /// The instructions. Cells so the debugger can patch a `Break` over
+    /// an instruction (`op_at` gives the original).
+    pub ops: Box<[Cell<Op>]>,
+    pub consts: Vec<Const>,
+    pub children: Vec<Rc<Code>>,
+    pub handlers: Vec<Handler>,
+    /// Source positions: (pc, line, column), sorted by pc.
+    pub lines: Vec<(u32, u32, u32)>,
+    /// Inline caches: one per constant (global names), then one per named
+    /// property access site (the index is in the op).
     pub ics: Box<[Cell<Ic>]>,
     /// Debugger patches: `Op::Break(i)` stands for `patches[i]`.
     pub patches: core::cell::RefCell<Vec<Patch>>,
     /// Lexical scopes for the debugger: register and environment
     /// variables and the pc range where each scope is live.
     pub scopes: Box<[DebugScope]>,
+}
+
+/// The header fields of a `Code` (everything but the body).
+pub struct CodeHeader {
+    pub nregs: u16,
+    pub nparams: u16,
+    pub length: u16,
+    pub name: Value,
+    pub kind: FuncKind,
+    pub strict: bool,
+    pub is_async: bool,
+    pub is_generator: bool,
+    pub keep_args: bool,
+    pub has_fields: bool,
+    pub source: Rc<Source>,
+    pub src_start: u32,
+    pub src_end: u32,
+}
+
+impl Code {
+    fn from_header(h: CodeHeader) -> Code {
+        Code {
+            nregs: h.nregs,
+            nparams: h.nparams,
+            length: h.length,
+            name: h.name,
+            kind: h.kind,
+            strict: h.strict,
+            is_async: h.is_async,
+            is_generator: h.is_generator,
+            keep_args: h.keep_args,
+            has_fields: h.has_fields,
+            source: h.source,
+            src_start: h.src_start,
+            src_end: h.src_end,
+            calls: Cell::new(0),
+            body: core::cell::OnceCell::new(),
+            lazy: core::cell::RefCell::new(None),
+        }
+    }
+
+    /// A code unit with its body.
+    pub fn new(h: CodeHeader, body: Body) -> Code {
+        let c = Code::from_header(h);
+        let _ = c.body.set(body);
+        c
+    }
+
+    /// A code unit whose body is decoded on first use.
+    pub fn new_lazy(h: CodeHeader, lazy: crate::cache::LazyBody) -> Code {
+        let c = Code::from_header(h);
+        *c.lazy.borrow_mut() = Some(lazy);
+        c
+    }
+
+    /// The body (decoding it now if it came from the cache).
+    #[inline]
+    pub fn body(&self) -> &Body {
+        self.body.get_or_init(|| {
+            let lazy = self.lazy.borrow_mut().take().expect("code without a body");
+            crate::cache::decode_body(lazy).expect("corrupt bytecode cache entry")
+        })
+    }
+
+    /// The body, if it has been decoded.
+    pub fn body_if_decoded(&self) -> Option<&Body> {
+        self.body.get()
+    }
+}
+
+impl core::fmt::Debug for Code {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Code").field("name", &self.name).field("kind", &self.kind).field("body", &self.body.get()).finish()
+    }
 }
 
 /// An instruction the debugger replaced by `Op::Break`.
@@ -512,18 +594,20 @@ impl Code {
     /// The instruction at `pc` (the original one under a debugger patch).
     #[inline]
     pub fn op_at(&self, pc: usize) -> Op {
-        match self.ops[pc].get() {
-            Op::Break(i) => self.patches.borrow()[i as usize].op,
+        let b = self.body();
+        match b.ops[pc].get() {
+            Op::Break(i) => b.patches.borrow()[i as usize].op,
             op => op,
         }
     }
 
     /// The source position of the instruction at `pc`.
     pub fn position(&self, pc: u32) -> (u32, u32) {
-        match self.lines.binary_search_by(|&(p, _, _)| p.cmp(&pc)) {
-            Ok(i) => (self.lines[i].1, self.lines[i].2),
+        let lines = &self.body().lines;
+        match lines.binary_search_by(|&(p, _, _)| p.cmp(&pc)) {
+            Ok(i) => (lines[i].1, lines[i].2),
             Err(0) => (0, 0),
-            Err(i) => (self.lines[i - 1].1, self.lines[i - 1].2),
+            Err(i) => (lines[i - 1].1, lines[i - 1].2),
         }
     }
 }
