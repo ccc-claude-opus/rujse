@@ -213,6 +213,8 @@ pub struct Vm {
     pub raw_json: Vec<ObjId>,
     /// Symbols used as weak collection keys -> their holder object.
     pub symbol_holders: BTreeMap<u32, ObjId>,
+    /// Recently compiled regular expressions ((pattern, flags), program).
+    pub regex_cache: Vec<((Vec<u16>, String), Rc<crate::regex::Regex>)>,
 }
 
 impl Vm {
@@ -261,6 +263,7 @@ impl Vm {
             join_stack: Vec::new(),
             raw_json: Vec::new(),
             symbol_holders: BTreeMap::new(),
+            regex_cache: Vec::new(),
         });
         vm.shapes.push(Shape { parent: None, key: None, attrs: 0, len: 0, transitions: Vec::new(), table: None });
         realm::init(&mut vm);

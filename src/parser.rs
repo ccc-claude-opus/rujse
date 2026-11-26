@@ -2072,6 +2072,10 @@ impl<'a> Parser<'a> {
                 self.tok = r;
                 let Tok::Regex { body, flags } = self.tok.tok.clone() else { unreachable!() };
                 validate_regex_flags(&flags).map_err(|m| SyntaxError { message: m.into(), line: pos.line, col: pos.col })?;
+                let units: Vec<u16> = body.encode_utf16().collect();
+                if let Err(m) = crate::regex::compile(&units, &flags) {
+                    return Err(SyntaxError { message: format!("Invalid regular expression: /{body}/{flags}: {m}"), line: pos.line, col: pos.col });
+                }
                 self.next()?;
                 Ok(Expr::new(ExprKind::Regex { body, flags }, pos))
             }
