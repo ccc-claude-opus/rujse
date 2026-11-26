@@ -736,7 +736,7 @@ impl<'a> Parser<'a> {
         if handler.is_none() && finalizer.is_none() {
             return self.err("missing catch or finally after try");
         }
-        Ok(Stmt { kind: StmtKind::Try { block, handler, finalizer }, pos })
+        Ok(Stmt { kind: StmtKind::Try { block, handler: handler.map(Box::new), finalizer }, pos })
     }
 
     fn expression_or_labeled_statement(&mut self) -> PResult<Stmt> {
@@ -886,9 +886,9 @@ impl<'a> Parser<'a> {
                     let body = self.loop_body()?;
                     let head = ForHead::Var(kind, d.target, d.init);
                     let kind = if is_of {
-                        StmtKind::ForOf { head, iter: right, body: Box::new(body), is_await }
+                        StmtKind::ForOf { head: Box::new(head), iter: right, body: Box::new(body), is_await }
                     } else {
-                        StmtKind::ForIn(head, right, Box::new(body))
+                        StmtKind::ForIn(Box::new(head), right, Box::new(body))
                     };
                     return Ok(Stmt { kind, pos });
                 }
@@ -930,9 +930,9 @@ impl<'a> Parser<'a> {
                     let body = self.loop_body()?;
                     let head = ForHead::Target(target);
                     let kind = if is_of {
-                        StmtKind::ForOf { head, iter: right, body: Box::new(body), is_await }
+                        StmtKind::ForOf { head: Box::new(head), iter: right, body: Box::new(body), is_await }
                     } else {
-                        StmtKind::ForIn(head, right, Box::new(body))
+                        StmtKind::ForIn(Box::new(head), right, Box::new(body))
                     };
                     return Ok(Stmt { kind, pos });
                 }
@@ -951,7 +951,7 @@ impl<'a> Parser<'a> {
         let update = if self.at(P::RParen) { None } else { Some(self.expression(false)?) };
         self.expect(P::RParen)?;
         let body = self.loop_body()?;
-        Ok(Stmt { kind: StmtKind::For { init, test, update, body: Box::new(body) }, pos })
+        Ok(Stmt { kind: StmtKind::For { init: init.map(Box::new), test: test.map(Box::new), update: update.map(Box::new), body: Box::new(body) }, pos })
     }
 
     fn for_using_start(&mut self) -> PResult<Option<VarKind>> {
@@ -2796,7 +2796,7 @@ impl<'a> Parser<'a> {
             let n = self.peek()?;
             if !matches!(n.tok, Tok::Punct(P::LParen) | Tok::Punct(P::Dot)) {
                 let imp = self.import_declaration()?;
-                return Ok(Stmt { kind: StmtKind::Import(imp), pos });
+                return Ok(Stmt { kind: StmtKind::Import(Box::new(imp)), pos });
             }
         }
         if self.at_kw("export") {

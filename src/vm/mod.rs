@@ -664,6 +664,12 @@ impl Vm {
         v.kind()
     }
 
+    /// The longest string this VM makes (code units): the engine maximum,
+    /// or less when the heap limit could not hold it (as UTF-16).
+    pub fn max_string_len(&self) -> usize {
+        crate::string::MAX_LEN.min(self.limits.max_heap_bytes / 2)
+    }
+
     /// Makes the VM usable again after the host abandoned a call into it
     /// midway (a trap or fuel exhaustion: the call never returned). The
     /// abandoned frames are dropped; the heap stays consistent. Call it

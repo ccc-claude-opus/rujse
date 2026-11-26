@@ -59,6 +59,14 @@ pub struct Scanner {
 }
 
 impl Region {
+    /// Needs nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.captured.is_empty()
+            && self.direct.is_empty()
+            && !(self.dynamic || self.this || self.arguments || self.new_target || self.super_call || self.super_prop)
+            && !(self.uses_arguments || self.uses_this || self.has_direct_eval)
+    }
+
     /// Adds everything `o` needs to `self`.
     pub fn merge(&mut self, o: &Region) {
         self.captured.extend(o.captured.iter().cloned());
@@ -204,6 +212,11 @@ impl Scanner {
             None => {
                 let mut sub = Region::default();
                 self.stmt_uncached(s, &mut sub);
+                if sub.is_empty() {
+                    // Nothing to merge: not worth a cache entry (a script
+                    // of millions of `{}` must not hold one per block).
+                    return;
+                }
                 let sub = Rc::new(sub);
                 self.stmt_cache.borrow_mut().insert(key, sub.clone());
                 sub
@@ -239,7 +252,7 @@ impl Scanner {
             }
             StmtKind::Block(b) => self.stmts(b, r),
             StmtKind::For { init, test, update, body } => {
-                match init {
+                match init.as_deref() {
                     Some(ForInit::Var(_, decls)) => {
                         for d in decls {
                             self.pattern(&d.target, r);
@@ -275,7 +288,7 @@ impl Scanner {
             }
             StmtKind::Try { block, handler, finalizer } => {
                 self.stmts(block, r);
-                if let Some((p, b)) = handler {
+                if let Some((p, b)) = handler.as_deref() {
                     if let Some(p) = p {
                         self.pattern(p, r);
                     }
@@ -595,7 +608,7 @@ fn var_names_stmt(s: &Stmt, out: &mut Vec<Name>) {
         }
         StmtKind::Block(b) => var_declared_names(b, out),
         StmtKind::For { init, body, .. } => {
-            if let Some(ForInit::Var(VarKind::Var, decls)) = init {
+            if let Some(ForInit::Var(VarKind::Var, decls)) = init.as_deref() {
                 for d in decls {
                     push(&d.target, out);
                 }
@@ -603,7 +616,7 @@ fn var_names_stmt(s: &Stmt, out: &mut Vec<Name>) {
             var_names_stmt(body, out);
         }
         StmtKind::ForIn(h, _, body) | StmtKind::ForOf { head: h, body, .. } => {
-            if let ForHead::Var(VarKind::Var, p, _) = h {
+            if let ForHead::Var(VarKind::Var, p, _) = &**h {
                 push(p, out);
             }
             var_names_stmt(body, out);
@@ -611,7 +624,7 @@ fn var_names_stmt(s: &Stmt, out: &mut Vec<Name>) {
         StmtKind::While(_, b) | StmtKind::DoWhile(b, _) | StmtKind::Labeled(_, b) | StmtKind::With(_, b) => var_names_stmt(b, out),
         StmtKind::Try { block, handler, finalizer } => {
             var_declared_names(block, out);
-            if let Some((_, b)) = handler {
+            if let Some((_, b)) = handler.as_deref() {
                 var_declared_names(b, out);
             }
             if let Some(f) = finalizer {

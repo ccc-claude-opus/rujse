@@ -552,7 +552,7 @@ impl Vm {
             return Ok(Value::str(x));
         }
         let len = a.len() + b.len();
-        if len > crate::string::MAX_LEN {
+        if len > self.max_string_len() {
             return Err(self.range_error("Invalid string length"));
         }
         if len >= crate::string::ROPE_MIN {

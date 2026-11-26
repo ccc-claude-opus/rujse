@@ -23,8 +23,8 @@ required-features = ["std"]
 [dependencies]
 
 [workspace]
-members = [".", "tools/test262", "tools/wasmbench", "tools/wasmbench/guests/boa", "tools/wasmbench/guests/rujse"]
-default-members = [".", "tools/test262", "tools/wasmbench"]
+members = [".", "tools/test262", "tools/fuzz", "tools/wasmbench", "tools/wasmbench/guests/boa", "tools/wasmbench/guests/rujse"]
+default-members = [".", "tools/test262", "tools/fuzz", "tools/wasmbench"]
 resolver = "3"
 
 [profile.release]

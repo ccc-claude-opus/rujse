@@ -82,15 +82,17 @@ pub enum StmtKind {
     Return(Option<Expr>),
     If(Expr, Box<Stmt>, Option<Box<Stmt>>),
     Block(Vec<Stmt>),
+    // Large parts are boxed: statements are many (2,000,000 `{}` must
+    // not take gigabytes).
     For {
-        init: Option<ForInit>,
-        test: Option<Expr>,
-        update: Option<Expr>,
+        init: Option<Box<ForInit>>,
+        test: Option<Box<Expr>>,
+        update: Option<Box<Expr>>,
         body: Box<Stmt>,
     },
-    ForIn(ForHead, Expr, Box<Stmt>),
+    ForIn(Box<ForHead>, Expr, Box<Stmt>),
     ForOf {
-        head: ForHead,
+        head: Box<ForHead>,
         iter: Expr,
         body: Box<Stmt>,
         is_await: bool,
@@ -103,7 +105,7 @@ pub enum StmtKind {
     Try {
         block: Vec<Stmt>,
         /// `catch (param) { … }`; the param is optional (`catch { }`).
-        handler: Option<(Option<Pattern>, Vec<Stmt>)>,
+        handler: Option<Box<(Option<Pattern>, Vec<Stmt>)>>,
         finalizer: Option<Vec<Stmt>>,
     },
     Switch(Expr, Vec<Case>),
@@ -111,7 +113,7 @@ pub enum StmtKind {
     Empty,
     Debugger,
     With(Expr, Box<Stmt>),
-    Import(Import),
+    Import(Box<Import>),
     Export(Export),
 }
 

@@ -465,7 +465,7 @@ fn module_has_tla(body: &[Stmt]) -> bool {
             }
             StmtKind::Block(b) => b.iter().for_each(|x| st(x, v)),
             StmtKind::For { init, test, update, body } => {
-                match init {
+                match init.as_deref() {
                     Some(ForInit::Expr(x)) => e(x, v),
                     Some(ForInit::Var(k, ds)) => {
                         if *k == VarKind::AwaitUsing {
@@ -495,7 +495,7 @@ fn module_has_tla(body: &[Stmt]) -> bool {
                 if *is_await {
                     v.0 = true;
                 }
-                if let ForHead::Var(VarKind::AwaitUsing, ..) = head {
+                if let ForHead::Var(VarKind::AwaitUsing, ..) = &**head {
                     v.0 = true;
                 }
                 e(iter, v);
@@ -507,7 +507,7 @@ fn module_has_tla(body: &[Stmt]) -> bool {
             }
             StmtKind::Try { block, handler, finalizer } => {
                 block.iter().for_each(|x| st(x, v));
-                if let Some((_, b)) = handler {
+                if let Some((_, b)) = handler.as_deref() {
                     b.iter().for_each(|x| st(x, v));
                 }
                 if let Some(f) = finalizer {

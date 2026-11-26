@@ -9,7 +9,7 @@ use crate::value::{StrId, Value};
 use crate::vm::conv::is_js_space;
 use crate::vm::{JsResult, Vm};
 
-use crate::string::MAX_LEN;
+
 
 pub fn init(vm: &mut Vm) {
     let op = vm.intrinsics.object_prototype;
@@ -93,7 +93,7 @@ pub fn init(vm: &mut Vm) {
         for &v in a {
             let t = vm.to_string(v)?;
             out.extend(vm.str(t).units());
-            if out.len() > MAX_LEN {
+            if out.len() > vm.max_string_len() {
                 return Err(vm.range_error("Invalid string length"));
             }
         }
@@ -213,7 +213,7 @@ pub fn init(vm: &mut Vm) {
         if u.is_empty() || n == 0.0 {
             return Ok(Value::str(vm.names.empty));
         }
-        if u.len() as f64 * n > MAX_LEN as f64 {
+        if u.len() as f64 * n > vm.max_string_len() as f64 {
             return Err(vm.range_error("Invalid string length"));
         }
         let total = u.len() * n as usize;
@@ -447,7 +447,7 @@ fn pad(vm: &mut Vm, this: Value, a: &[Value], at_start: bool) -> JsResult<Value>
     if filler.is_empty() {
         return Ok(Value::str(s));
     }
-    if max as usize > MAX_LEN {
+    if max as usize > vm.max_string_len() {
         return Err(vm.range_error("Invalid string length"));
     }
     let fill_len = max as usize - su.len();
@@ -619,6 +619,9 @@ fn replace(vm: &mut Vm, this: Value, a: &[Value], all: bool) -> JsResult<Value> 
         };
         out.extend_from_slice(&replacement);
         end = pos + tu.len();
+        if out.len() > vm.max_string_len() {
+            return Err(vm.range_error("Invalid string length"));
+        }
     }
     out.extend_from_slice(&su[end..]);
     Ok(vm.new_string_units(&out))

@@ -560,6 +560,10 @@ pub fn get_substitution(vm: &mut Vm, matched: &[u16], s: &[u16], position: usize
     let mut i = 0;
     let r = replacement;
     while i < r.len() {
+        // `$1` repeated can make the result enormous.
+        if out.len() > vm.max_string_len() {
+            return Err(vm.range_error("Invalid string length"));
+        }
         let c = r[i];
         if c != b'$' as u16 || i + 1 >= r.len() {
             out.push(c);
@@ -713,6 +717,9 @@ fn symbol_replace(vm: &mut Vm, this: Value, a: &[Value], _: Value) -> JsResult<V
             acc.extend_from_slice(&su[next_pos..position]);
             acc.extend_from_slice(&replacement);
             next_pos = position + mu.len();
+            if acc.len() > vm.max_string_len() {
+                return Err(vm.range_error("Invalid string length"));
+            }
         }
     }
     if next_pos < su.len() {

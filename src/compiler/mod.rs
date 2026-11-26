@@ -1809,7 +1809,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         Ok(true)
     }
 
-    fn for_stmt(&mut self, init: &'a Option<ForInit>, test: &'a Option<Expr>, update: &'a Option<Expr>, body: &'a Stmt, result: Option<Reg>) -> CResult<()> {
+    fn for_stmt(&mut self, init: &'a Option<Box<ForInit>>, test: &'a Option<Box<Expr>>, update: &'a Option<Box<Expr>>, body: &'a Stmt, result: Option<Reg>) -> CResult<()> {
         if let Some(r) = result {
             self.emit(Op::LdaUndef);
             self.emit(Op::Star(r));
@@ -1817,7 +1817,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         let labels = core::mem::take(&mut self.f().pending_labels);
         let mut scoped = false;
         let mut per_iteration = false;
-        match init {
+        match init.as_deref() {
             Some(ForInit::Var(kind @ (VarKind::Let | VarKind::Const), decls)) => {
                 let mut names = Vec::new();
                 for d in decls {
@@ -2201,7 +2201,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         Ok(true)
     }
 
-    fn try_stmt(&mut self, block: &'a [Stmt], handler: &'a Option<(Option<Pattern>, Vec<Stmt>)>, finalizer: &'a Option<Vec<Stmt>>, result: Option<Reg>) -> CResult<()> {
+    fn try_stmt(&mut self, block: &'a [Stmt], handler: &'a Option<Box<(Option<Pattern>, Vec<Stmt>)>>, finalizer: &'a Option<Vec<Stmt>>, result: Option<Reg>) -> CResult<()> {
         if let Some(r) = result {
             self.emit(Op::LdaUndef);
             self.emit(Op::Star(r));
@@ -2215,7 +2215,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
             None
         };
         let mut done_jumps = Vec::new();
-        if let Some((param, hbody)) = handler {
+        if let Some((param, hbody)) = handler.as_deref() {
             let exc = self.alloc_reg();
             let ti = self.begin_try(exc);
             self.f().ctx.push(Ctx::Catch { try_index: ti });
@@ -2622,7 +2622,7 @@ fn annex_b_stmt(s: &Stmt, blocked: &mut Vec<Name>, out: &mut Vec<Name>, in_block
         }
         StmtKind::For { body, init, .. } => {
             let n = blocked.len();
-            if let Some(ForInit::Var(VarKind::Let | VarKind::Const, ds)) = init {
+            if let Some(ForInit::Var(VarKind::Let | VarKind::Const, ds)) = init.as_deref() {
                 for d in ds {
                     let mut v = Vec::new();
                     crate::parser::bound_names(&d.target, &mut v);
@@ -2634,7 +2634,7 @@ fn annex_b_stmt(s: &Stmt, blocked: &mut Vec<Name>, out: &mut Vec<Name>, in_block
         }
         StmtKind::ForIn(h, _, body) | StmtKind::ForOf { head: h, body, .. } => {
             let n = blocked.len();
-            if let ForHead::Var(VarKind::Let | VarKind::Const, p, _) = h {
+            if let ForHead::Var(VarKind::Let | VarKind::Const, p, _) = &**h {
                 let mut v = Vec::new();
                 crate::parser::bound_names(p, &mut v);
                 blocked.extend(v.into_iter().map(|x| x.0));
@@ -2645,7 +2645,7 @@ fn annex_b_stmt(s: &Stmt, blocked: &mut Vec<Name>, out: &mut Vec<Name>, in_block
         StmtKind::While(_, b) | StmtKind::DoWhile(b, _) | StmtKind::Labeled(_, b) | StmtKind::With(_, b) => annex_b_stmt(b, blocked, out, false),
         StmtKind::Try { block, handler, finalizer } => {
             annex_b_block(block, blocked, out);
-            if let Some((p, b)) = handler {
+            if let Some((p, b)) = handler.as_deref() {
                 let n = blocked.len();
                 if let Some(Pattern::Object { .. } | Pattern::Array { .. }) = p {
                     let mut v = Vec::new();
@@ -2724,7 +2724,7 @@ pub fn collect_annex_b_sites(body: &[Stmt], names: &[Name], out: &mut Vec<usize>
             }
             StmtKind::Try { block, handler, finalizer } => {
                 block.iter().for_each(|x| walk(x, names, out, true));
-                if let Some((_, b)) = handler {
+                if let Some((_, b)) = handler.as_deref() {
                     b.iter().for_each(|x| walk(x, names, out, true));
                 }
                 if let Some(f) = finalizer {
