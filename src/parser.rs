@@ -1559,11 +1559,11 @@ impl<'a> Parser<'a> {
         let mut seen_andor = false;
         loop {
             let Some((prec, op)) = self.binary_op(no_in) else { break };
-            if prec < min || (prec == min && prec != 12) {
-                // Left-associative except `**`.
-                if !(prec == 12 && prec >= min) {
-                    break;
-                }
+            // Operators binding weaker than `min` end this operand; equal
+            // ones are taken here (left-associative: the right operand is
+            // parsed with min = prec + 1; `**` recurses with min = 12).
+            if prec < min {
+                break;
             }
             if prec == 12 {
                 // `-x ** y` is an error.

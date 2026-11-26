@@ -9,4 +9,4 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-rujse = { path = "../../../..", default-features = false }
+rujse = { path = "../../../.." }
