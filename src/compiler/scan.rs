@@ -50,6 +50,29 @@ pub struct Region {
 #[derive(Default)]
 pub struct Scanner {
     cache: RefCell<BTreeMap<usize, Rc<FreeInfo>>>,
+    /// The raw region of each function (parameters and body), so the
+    /// compiler does not walk the body again.
+    fn_regions: RefCell<BTreeMap<usize, Rc<Region>>>,
+    /// Regions of compound statements, keyed by address: each subtree is
+    /// walked once even though the compiler asks about every block.
+    stmt_cache: RefCell<BTreeMap<usize, Rc<Region>>>,
+}
+
+impl Region {
+    /// Adds everything `o` needs to `self`.
+    pub fn merge(&mut self, o: &Region) {
+        self.captured.extend(o.captured.iter().cloned());
+        self.direct.extend(o.direct.iter().cloned());
+        self.dynamic |= o.dynamic;
+        self.this |= o.this;
+        self.arguments |= o.arguments;
+        self.new_target |= o.new_target;
+        self.super_call |= o.super_call;
+        self.super_prop |= o.super_prop;
+        self.uses_arguments |= o.uses_arguments;
+        self.uses_this |= o.uses_this;
+        self.has_direct_eval |= o.has_direct_eval;
+    }
 }
 
 impl Scanner {
@@ -58,17 +81,7 @@ impl Scanner {
         if let Some(i) = self.cache.borrow().get(&key) {
             return i.clone();
         }
-        let mut r = Region::default();
-        for p in &f.params {
-            self.pattern(&p.target, &mut r);
-            if let Some(d) = &p.default {
-                self.expr(d, &mut r);
-            }
-        }
-        if let Some(rest) = &f.rest {
-            self.pattern(rest, &mut r);
-        }
-        self.stmts(&f.body, &mut r);
+        let r = self.function_region(f);
         let is_arrow = f.kind == FnKind::Arrow;
         // Names declared at the function's top level are its own.
         let mut own: BTreeSet<Name> = BTreeSet::new();
@@ -103,6 +116,29 @@ impl Scanner {
         let info = Rc::new(info);
         self.cache.borrow_mut().insert(key, info.clone());
         info
+    }
+
+    /// The region of a function's parameters and body (what the code
+    /// itself and its nested functions use, before removing its own names).
+    pub fn function_region(&self, f: &Rc<Function>) -> Rc<Region> {
+        let key = Rc::as_ptr(f) as usize;
+        if let Some(r) = self.fn_regions.borrow().get(&key) {
+            return r.clone();
+        }
+        let mut r = Region::default();
+        for p in &f.params {
+            self.pattern(&p.target, &mut r);
+            if let Some(d) = &p.default {
+                self.expr(d, &mut r);
+            }
+        }
+        if let Some(rest) = &f.rest {
+            self.pattern(rest, &mut r);
+        }
+        self.stmts(&f.body, &mut r);
+        let r = Rc::new(r);
+        self.fn_regions.borrow_mut().insert(key, r.clone());
+        r
     }
 
     fn nested(&self, f: &Rc<Function>, r: &mut Region) {
@@ -144,6 +180,39 @@ impl Scanner {
     }
 
     pub fn stmt(&self, s: &Stmt, r: &mut Region) {
+        let compound = matches!(
+            s.kind,
+            StmtKind::If(..)
+                | StmtKind::Block(_)
+                | StmtKind::For { .. }
+                | StmtKind::ForIn(..)
+                | StmtKind::ForOf { .. }
+                | StmtKind::While(..)
+                | StmtKind::DoWhile(..)
+                | StmtKind::Try { .. }
+                | StmtKind::Switch(..)
+                | StmtKind::Labeled(..)
+                | StmtKind::With(..)
+        );
+        if !compound {
+            return self.stmt_uncached(s, r);
+        }
+        let key = s as *const Stmt as usize;
+        let cached = self.stmt_cache.borrow().get(&key).cloned();
+        let sub = match cached {
+            Some(c) => c,
+            None => {
+                let mut sub = Region::default();
+                self.stmt_uncached(s, &mut sub);
+                let sub = Rc::new(sub);
+                self.stmt_cache.borrow_mut().insert(key, sub.clone());
+                sub
+            }
+        };
+        r.merge(&sub);
+    }
+
+    fn stmt_uncached(&self, s: &Stmt, r: &mut Region) {
         match &s.kind {
             StmtKind::Expr(e) | StmtKind::Throw(e) => self.expr(e, r),
             StmtKind::Var(_, decls) => {

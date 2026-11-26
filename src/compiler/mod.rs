@@ -1035,17 +1035,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         };
         let is_expr = self.fn_expr_flag.replace(false);
         let info = self.scan.function(f);
-        let mut region = Region::default();
-        for p in &f.params {
-            self.scan.pattern(&p.target, &mut region);
-            if let Some(d) = &p.default {
-                self.scan.expr(d, &mut region);
-            }
-        }
-        if let Some(r) = &f.rest {
-            self.scan.pattern(r, &mut region);
-        }
-        self.scan.stmts(&f.body, &mut region);
+        let region = self.scan.function_region(f);
         let dynamic = region.dynamic || region.has_direct_eval;
         let sloppy_eval = region.has_direct_eval && !f.strict;
         let mut fs = self.new_func(kind, f.strict, f.is_async, f.is_generator);
