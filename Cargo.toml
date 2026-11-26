@@ -1,0 +1,42 @@
+[package]
+name = "rujse"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A JavaScript engine in Rust, built first for rubrowser (runs as wasm)"
+repository = "https://github.com/ccc-claude-opus/rujse"
+
+[features]
+default = ["std"]
+# The CLI, the host clock and random numbers; without it the core is
+# no_std + alloc and the embedder supplies them (rubrowser's js.wasm).
+std = []
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "rujse"
+path = "src/bin/rujse.rs"
+required-features = ["std"]
+
+[dependencies]
+
+[workspace]
+members = [".", "tools/test262", "tools/wasmbench", "tools/wasmbench/guests/boa", "tools/wasmbench/guests/rujse"]
+default-members = [".", "tools/test262", "tools/wasmbench"]
+resolver = "3"
+
+[profile.release]
+debug = 1
+
+# The engine as a wasm runtime (like rubrowser's js.wasm): optimized for
+# speed, since wasmtime compiles it to machine code.
+[profile.runtime]
+inherits = "release"
+opt-level = 3
+debug = 0
+panic = "abort"
+strip = true
+codegen-units = 1
+lto = true

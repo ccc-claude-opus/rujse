@@ -1,0 +1,5 @@
+# boa (the wasmbench baseline) needs random numbers; bare wasm has no OS
+# source, so its guest supplies them (getrandom "custom" backend), the same
+# way rubrowser's js.wasm does.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]

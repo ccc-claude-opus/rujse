@@ -1,0 +1,10 @@
+[package]
+name = "wasmbench"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Counts wasm instructions (wasmtime fuel) of JS engines built as wasm"
+
+[dependencies]
+wasmtime = { version = "50", default-features = false, features = ["std", "runtime", "cranelift", "parallel-compilation"] }
