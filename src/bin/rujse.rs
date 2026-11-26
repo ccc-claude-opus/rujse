@@ -51,7 +51,17 @@ fn main() {
             let mut vm = rujse::Vm::new();
             vm.host = Some(Box::new(CliHost));
             install_print(&mut vm);
-            let r = vm.eval_script(&src, &name).and_then(|_| vm.run_jobs());
+            let is_module = name.ends_with(".mjs") || args.iter().any(|a| a == "--module");
+            let r = if is_module {
+                let path = std::fs::canonicalize(&name).map(|p| p.to_string_lossy().into_owned()).unwrap_or(name.clone());
+                let p = vm.import_module(&path, None);
+                vm.run_jobs().and_then(|_| match rujse::builtins::promise::state_of(&vm, p) {
+                    Some((rujse::builtins::promise::State::Rejected, e)) => Err(rujse::Throw::Value(e)),
+                    _ => Ok(()),
+                })
+            } else {
+                vm.eval_script(&src, &name).and_then(|_| vm.run_jobs())
+            };
             if let Err(rujse::Throw::Value(e)) = r {
                 let s = vm.error_to_string(e);
                 eprintln!("Uncaught {s}");
@@ -73,6 +83,36 @@ impl rujse::Host for CliHost {
     fn print(&mut self, text: &str) {
         println!("{text}");
     }
+    fn resolve_module(&mut self, referrer: Option<&str>, specifier: &str) -> Result<String, String> {
+        resolve_path(referrer, specifier)
+    }
+    fn fetch_module(&mut self, url: &str) -> rujse::module::ModuleSource {
+        match std::fs::read_to_string(url) {
+            Ok(s) => rujse::module::ModuleSource::Ready(s),
+            Err(e) => rujse::module::ModuleSource::Error(format!("cannot load module {url}: {e}")),
+        }
+    }
+}
+
+/// File-path module resolution: relative to the importing file.
+pub fn resolve_path(referrer: Option<&str>, specifier: &str) -> Result<String, String> {
+    let base = match referrer {
+        Some(r) => std::path::Path::new(r).parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+        None => std::env::current_dir().unwrap_or_default(),
+    };
+    let p = if specifier.starts_with('/') { std::path::PathBuf::from(specifier) } else { base.join(specifier) };
+    // Normalize . and .. without touching the file system.
+    let mut out = std::path::PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    Ok(out.to_string_lossy().into_owned())
 }
 
 fn install_print(vm: &mut rujse::Vm) {

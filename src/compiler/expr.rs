@@ -327,7 +327,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 if let Some(b) = s.bindings.iter().find(|b| &*b.name == name) {
                     return Some(match b.loc {
                         Loc::Reg(r) if !crossed => Resolved::Reg(r, b.clone()),
-                        Loc::Reg(_) => return None,
+                        Loc::Reg(_) | Loc::Import(_) => return None,
                         Loc::Env(slot) => Resolved::Env(hops, slot, b.clone(), crossed),
                     });
                 }

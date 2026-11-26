@@ -403,6 +403,14 @@ impl Vm {
                         }
                         self.envs.get_mut(e.0).slots[s as usize] = acc;
                     }
+                    Op::LdaImport(h, i) => {
+                        let e = self.env_at(self.frames[fi].env, h);
+                        let (te, ts) = self.envs.get(e.0).imports.as_ref().unwrap()[i as usize];
+                        acc = self.envs.get(te.0).slots[ts as usize];
+                        if acc.is_uninit() {
+                            tri!(Err(self.reference_error("Cannot access an imported binding before its module is initialized")));
+                        }
+                    }
                     Op::CheckInit(x, k) => {
                         if r!(x).is_uninit() {
                             tri!(Err(self.tdz_error(konst!(k))));

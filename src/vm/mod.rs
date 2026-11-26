@@ -48,6 +48,8 @@ pub struct Env {
     pub with: Option<ObjId>,
     /// Vars added by sloppy direct eval to a function scope.
     pub eval_vars: Option<Box<Dict>>,
+    /// Module environments: the resolved import bindings (env, slot).
+    pub imports: Option<Rc<[(EnvId, u16)]>>,
 }
 
 /// Arguments object mapped to a sloppy function's parameters.
@@ -306,7 +308,7 @@ impl Vm {
 
     pub fn new_env(&mut self, n: usize, init: Value, parent: Option<EnvId>) -> EnvId {
         self.alloc_bytes += 48 + n * 8;
-        EnvId(self.envs.alloc(Env { slots: alloc::vec![init; n], parent, names: None, with: None, eval_vars: None }))
+        EnvId(self.envs.alloc(Env { slots: alloc::vec![init; n], parent, names: None, with: None, eval_vars: None, imports: None }))
     }
 
     pub fn new_symbol(&mut self, description: Option<StrId>) -> SymId {

@@ -93,6 +93,8 @@ const UNSUPPORTED_FEATURES: &[&str] = &[
     "explicit-resource-management",
     "Atomics.waitAsync",
     "ShadowRealm",
+    "import-text",
+    "import-bytes",
 ];
 
 fn run_parse_only(path: &Path, src: &str, meta: &Meta) -> Result<(), String> {
@@ -191,6 +193,26 @@ fn install_host(vm: &mut rujse::Vm, out: std::rc::Rc<std::cell::RefCell<Vec<Stri
         fn print(&mut self, t: &str) {
             self.0.borrow_mut().push(t.to_string());
         }
+        fn resolve_module(&mut self, referrer: Option<&str>, specifier: &str) -> Result<String, String> {
+            let base = referrer.and_then(|r| std::path::Path::new(r).parent()).map(|p| p.to_path_buf()).unwrap_or_default();
+            let mut out = std::path::PathBuf::new();
+            for c in base.join(specifier).components() {
+                match c {
+                    std::path::Component::ParentDir => {
+                        out.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    other => out.push(other),
+                }
+            }
+            Ok(out.to_string_lossy().into_owned())
+        }
+        fn fetch_module(&mut self, url: &str) -> rujse::module::ModuleSource {
+            match std::fs::read_to_string(url) {
+                Ok(s) => rujse::module::ModuleSource::Ready(s),
+                Err(e) => rujse::module::ModuleSource::Error(format!("cannot load {url}: {e}")),
+            }
+        }
     }
     vm.host = Some(Box::new(H(out)));
     let print = vm.native_fn("print", 1, |vm, _, a, _| {
@@ -241,9 +263,9 @@ fn error_name(vm: &mut rujse::Vm, e: rujse::Value) -> String {
     }
 }
 
-fn run_once(o: &Opts, src: &str, meta: &Meta, strict: bool) -> Result<(), String> {
+fn run_once(o: &Opts, src: &str, meta: &Meta, strict: bool, path: &Path) -> Result<(), String> {
     let mut code = String::new();
-    if strict {
+    if strict && !meta.flags.module {
         code.push_str("'use strict';\n");
     }
     if !meta.flags.raw {
@@ -260,13 +282,26 @@ fn run_once(o: &Opts, src: &str, meta: &Meta, strict: bool) -> Result<(), String
             code.push('\n');
         }
     }
-    code.push_str(src);
+    if !meta.flags.module {
+        code.push_str(src);
+    }
     let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let mut vm = rujse::Vm::new();
     vm.limits.max_heap_bytes = 256 << 20;
     vm.budget = Some(400_000_000);
     install_host(&mut vm, out.clone());
-    let r = vm.eval_script(&code, "test.js").and_then(|_| vm.run_jobs());
+    let r = if meta.flags.module {
+        vm.eval_script(&code, "harness.js").and_then(|_| {
+            let p = vm.import_module(&path.to_string_lossy(), None);
+            vm.run_jobs()?;
+            match rujse::builtins::promise::state_of(&vm, p) {
+                Some((rujse::builtins::promise::State::Rejected, e)) => Err(rujse::Throw::Value(e)),
+                _ => Ok(()),
+            }
+        })
+    } else {
+        vm.eval_script(&code, &path.to_string_lossy()).and_then(|_| vm.run_jobs())
+    };
     let negative = meta.negative.as_ref();
     match r {
         Ok(()) => {
@@ -297,18 +332,17 @@ fn run_once(o: &Opts, src: &str, meta: &Meta, strict: bool) -> Result<(), String
 }
 
 fn runner_full(o: &Opts, path: &Path, src: &str, meta: &Meta) -> Result<(), String> {
-    let _ = path;
     if meta.flags.module {
-        return Err("modules not supported yet".into());
+        return run_once(o, src, meta, true, path);
     }
     if meta.flags.only_strict {
-        return run_once(o, src, meta, true);
+        return run_once(o, src, meta, true, path);
     }
     if meta.flags.no_strict || meta.flags.raw {
-        return run_once(o, src, meta, false);
+        return run_once(o, src, meta, false, path);
     }
-    run_once(o, src, meta, false)?;
-    run_once(o, src, meta, true)
+    run_once(o, src, meta, false, path)?;
+    run_once(o, src, meta, true, path)
 }
 
 fn report(o: &Opts, results: &[(String, Outcome, String)]) {

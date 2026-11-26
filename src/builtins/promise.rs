@@ -728,3 +728,9 @@ fn race(vm: &mut Vm, c: Value, args: &[Value], _nt: Value) -> JsResult<Value> {
 pub fn _v() -> Vec<u8> {
     vec![]
 }
+
+/// The state and result of a promise (None if not a promise).
+pub fn state_of(vm: &Vm, p: Value) -> Option<(State, Value)> {
+    let o = p.as_object()?;
+    data(vm, o).map(|d| (d.state, d.result))
+}

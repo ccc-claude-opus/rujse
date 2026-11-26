@@ -211,3 +211,12 @@ impl Vm {
         })
     }
 }
+
+impl Vm {
+    /// The async generator is suspended at an `await` (not a `yield`).
+    pub fn async_gen_in_await(&self, g: ObjId) -> bool {
+        let st = self.gen_state(g);
+        let pc = st.pc as usize;
+        pc > 0 && matches!(st.code.ops.get(pc - 1), Some(Op::Await(_)))
+    }
+}

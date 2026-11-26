@@ -6,7 +6,10 @@
 //! environment slots. `try/finally` exits run the finally block inline.
 
 mod expr;
+mod module;
 pub mod scan;
+
+pub use module::{ImportEntry, ModuleInfo};
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -51,6 +54,8 @@ pub enum BKind {
 pub enum Loc {
     Reg(Reg),
     Env(u16),
+    /// An import binding: index into the module environment's import table.
+    Import(u16),
 }
 
 #[derive(Clone, Debug)]
@@ -420,6 +425,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                         Loc::Reg(r) if !crossed_function => Resolved::Reg(r, b.clone()),
                         Loc::Reg(_) => Resolved::Dynamic,
                         Loc::Env(slot) => Resolved::Env(hops, slot, b.clone(), crossed_function),
+                        Loc::Import(i) => Resolved::Import(hops, i),
                     };
                 }
                 // A sloppy var scope that eval may have extended: names
@@ -462,6 +468,9 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 } else {
                     self.emit(Op::LdaEnv(h, slot));
                 }
+            }
+            Resolved::Import(h, i) => {
+                self.emit(Op::LdaImport(h, i));
             }
             Resolved::Global => {
                 let k = self.name_const(name);
@@ -541,6 +550,16 @@ impl<'a, 'v> Compiler<'a, 'v> {
                     }
                 }
             },
+            Resolved::Import(h, i) => {
+                // TDZ check first, then TypeError.
+                let t = self.alloc_reg();
+                self.emit(Op::Star(t));
+                self.emit(Op::LdaImport(h, i));
+                self.emit(Op::Ldar(t));
+                self.free_to(t);
+                let k = self.name_const(name);
+                self.emit(Op::ThrowConstAssign(k));
+            }
             Resolved::Global => {
                 let k = self.name_const(name);
                 self.emit(Op::StaGlobal(k, strict));
@@ -562,6 +581,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
             Resolved::Env(h, slot, _, _) => {
                 self.emit(Op::StaEnv(h, slot));
             }
+            Resolved::Import(..) => {}
             Resolved::Global => {
                 let k = self.name_const(name);
                 // Script top-level lexical or var.
@@ -1647,6 +1667,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                         Loc::Env(slot) => {
                             self.emit(Op::StaEnv(hops, slot));
                         }
+                        Loc::Import(_) => {}
                     }
                     return Ok(());
                 }
@@ -2566,6 +2587,8 @@ pub enum Resolved {
     Reg(Reg, Binding),
     /// (hops, slot, binding, crossed a function boundary)
     Env(u16, u16, Binding, bool),
+    /// An imported binding: (hops to the module environment, index).
+    Import(u16, u16),
     Global,
     Dynamic,
 }

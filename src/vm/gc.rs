@@ -122,7 +122,7 @@ impl Vm {
         m.values.extend_from_slice(&self.kept_alive);
         m.values.extend(self.raw_json.iter().map(|o| Value::object(*o)));
         m.values.extend(self.join_stack.iter().map(|o| Value::object(*o)));
-        self.modules.trace(&mut m.values);
+        self.modules.trace(&mut m.values, &mut m.envs);
         crate::debug::trace_roots(self, &mut m.values);
         // Atoms are permanent; so are the symbols used as shape keys.
         let atoms: Vec<StrId> = self.atoms().collect();
@@ -173,6 +173,9 @@ impl Vm {
                 }
                 if let Some(w) = env.with {
                     m.values.push(Value::object(w));
+                }
+                if let Some(im) = &env.imports {
+                    m.envs.extend(im.iter().map(|x| x.0));
                 }
                 if let Some(ns) = &env.names {
                     m.values.extend_from_slice(ns);

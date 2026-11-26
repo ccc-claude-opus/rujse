@@ -48,6 +48,9 @@ pub enum Op {
     LdaEnvChecked(u16, u16, K),
     /// Assigns to a `let` binding that may be in its TDZ.
     StaEnvChecked(u16, u16, K),
+    /// acc = an imported binding: (hops to the module environment, index
+    /// in its import table); ReferenceError while uninitialized.
+    LdaImport(u16, u16),
     /// Register binding TDZ check: ReferenceError if `r` is uninitialized.
     CheckInit(Reg, K),
     /// Throws TypeError "assignment to constant variable" (name `K`).
