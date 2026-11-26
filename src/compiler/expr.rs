@@ -1812,7 +1812,8 @@ impl<'a, 'v> Compiler<'a, 'v> {
             self.emit(Op::Return);
         }
         self.pop_scope_no_emit();
-        Ok(self.finish(name, 0, 0, false, has_fields && !derived, (c.start, c.end)))
+        // A derived default constructor forwards its arguments to super.
+        Ok(self.finish(name, 0, 0, derived, has_fields && !derived, (c.start, c.end)))
     }
 
     /// The synthetic method that defines the instance fields on `this`.

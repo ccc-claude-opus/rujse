@@ -174,7 +174,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
             })
         };
         let mut exported: Vec<String> = Vec::new();
-        let mut add_export = |name: String, exported: &mut Vec<String>| -> CResult<()> {
+        let add_export = |name: String, exported: &mut Vec<String>| -> CResult<()> {
             if exported.contains(&name) {
                 return err(&format!("Duplicate export of '{name}'"), Pos::default());
             }

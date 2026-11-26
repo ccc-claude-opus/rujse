@@ -148,7 +148,6 @@ impl CharSet {
 
 #[derive(Debug, Clone)]
 enum Node {
-    Empty,
     Char(u32),
     /// `.`
     Any,
@@ -1126,7 +1125,7 @@ enum Inst {
     End(bool),
     WordB(bool, bool),
     BackRef(u32, bool, bool),
-    Look { start: u32, end: u32, ahead: bool, negate: bool },
+    Look { start: u32, end: u32, negate: bool },
     SetReg(u32, u32),
     /// Loop control: (counter reg, min, max, exit target, greedy).
     Repeat { reg: u32, min: u32, max: u32, exit: u32, greedy: bool },
@@ -1136,10 +1135,6 @@ enum Inst {
     /// Fail if the iteration (counter past min) matched empty: (pos reg,
     /// counter reg, min).
     EmptyCheck(u32, u32, u32),
-    /// Case-folding toggles for modifiers: (ignore_case).
-    SetFold(bool),
-    SetMulti(bool),
-    SetDotAll(bool),
     /// Matches one of the strings of a `v`-mode class (longest first).
     Strings(u32, bool),
     Match,
@@ -1226,7 +1221,6 @@ impl Compiler<'_> {
 
     fn node(&mut self, n: &Node) {
         match n {
-            Node::Empty => {}
             Node::Char(c) => {
                 let c = if self.fold { canonicalize(*c, self.flags.either_unicode()) } else { *c };
                 self.emit(Inst::Char(c, self.backward, self.fold));
@@ -1314,7 +1308,7 @@ impl Compiler<'_> {
                 self.emit(Inst::WordB(*b, self.fold && self.flags.either_unicode()));
             }
             Node::Look { node, ahead, negate } => {
-                let at = self.emit(Inst::Look { start: 0, end: 0, ahead: *ahead, negate: *negate });
+                let at = self.emit(Inst::Look { start: 0, end: 0, negate: *negate });
                 let start = self.here();
                 let saved = self.backward;
                 self.backward = !*ahead;
@@ -1322,7 +1316,7 @@ impl Compiler<'_> {
                 self.backward = saved;
                 self.emit(Inst::Match);
                 let end = self.here();
-                self.prog[at] = Inst::Look { start, end, ahead: *ahead, negate: *negate };
+                self.prog[at] = Inst::Look { start, end, negate: *negate };
             }
             Node::BackRef(groups) => {
                 let i = self.backrefs.len() as u32;
@@ -1709,7 +1703,7 @@ impl Matcher<'_, '_> {
                         }
                     }
                 }
-                Inst::Look { start, end, ahead: _, negate } => {
+                Inst::Look { start, end, negate } => {
                     let (start, end, negate) = (*start as usize, *end as usize, *negate);
                     let mark = self.undo.len();
                     let r = self.run(start, pos)?;
@@ -1769,10 +1763,6 @@ impl Matcher<'_, '_> {
                         stack.push((body, pos, self.undo.len()));
                         pc = *exit as usize;
                     }
-                    true
-                }
-                Inst::SetFold(_) | Inst::SetMulti(_) | Inst::SetDotAll(_) => {
-                    pc += 1;
                     true
                 }
             };

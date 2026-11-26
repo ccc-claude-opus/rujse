@@ -119,11 +119,6 @@ enum Ctx<'a> {
         body: &'a [Stmt],
         try_index: usize,
     },
-    IterClose {
-        reg: Reg,
-        try_index: usize,
-        is_async: bool,
-    },
     /// An active try region (catch handler) without cleanup.
     Catch {
         try_index: usize,
@@ -163,7 +158,6 @@ pub struct FuncState<'a> {
     /// The function has its own `this` binding (pseudo-var) or uses frame
     /// `this` directly.
     derived: bool,
-    template_sites: u32,
     /// Every environment of this function records its slot names.
     pub named_envs: bool,
 }
@@ -482,10 +476,6 @@ impl<'a, 'v> Compiler<'a, 'v> {
         Resolved::Global
     }
 
-    fn has_sloppy_eval_outer(&self) -> bool {
-        self.funcs.iter().any(|f| f.scopes.iter().any(|s| s.kind == ScopeKind::Outer && s.dynamic))
-    }
-
     // ----- loading and storing bindings ------------------------------
 
     /// acc = the value of `name` (with TDZ check if needed).
@@ -687,7 +677,6 @@ impl<'a, 'v> Compiler<'a, 'v> {
             is_arrow: kind == FuncKind::Arrow,
             pending_labels: Vec::new(),
             derived: kind == FuncKind::DerivedConstructor,
-            template_sites: 0,
             named_envs: false,
         }
     }
@@ -854,40 +843,6 @@ impl<'a, 'v> Compiler<'a, 'v> {
         self.pop_scope_no_emit();
         let name = Value::str(self.vm.names.empty);
         Ok(self.finish(name, 0, 0, false, false, (0, prog.end)))
-    }
-
-    /// Ops were inserted at index 0: shift labels by one.
-    fn shift_for_insert(&mut self) {
-        let f = self.f();
-        for op in f.ops.iter_mut().skip(1) {
-            *op = match *op {
-                Op::Jmp(l) => Op::Jmp(l + 1),
-                Op::JmpTrue(l) => Op::JmpTrue(l + 1),
-                Op::JmpFalse(l) => Op::JmpFalse(l + 1),
-                Op::JmpNullish(l) => Op::JmpNullish(l + 1),
-                Op::JmpNotNullish(l) => Op::JmpNotNullish(l + 1),
-                Op::JmpUndefined(l) => Op::JmpUndefined(l + 1),
-                Op::JmpNotUndefined(l) => Op::JmpNotUndefined(l + 1),
-                Op::JmpStrictEq(r, l) => Op::JmpStrictEq(r, l + 1),
-                Op::JmpIfIntEq(r, i, l) => Op::JmpIfIntEq(r, i, l + 1),
-                Op::IteratorStep(r, l) => Op::IteratorStep(r, l + 1),
-                Op::ForInNext(r, l) => Op::ForInNext(r, l + 1),
-                other => other,
-            };
-        }
-        for s in f.scopes.iter_mut() {
-            if let Some(p) = s.push_at.as_mut() {
-                *p += 1;
-            }
-        }
-        for h in f.handlers.iter_mut() {
-            h.start += 1;
-            h.end += 1;
-            h.target += 1;
-        }
-        for l in f.lines.iter_mut() {
-            l.0 += 1;
-        }
     }
 
     fn pop_scope_no_emit(&mut self) {
@@ -1382,10 +1337,6 @@ impl<'a, 'v> Compiler<'a, 'v> {
         };
         let _ = info;
         Ok(self.finish(name, nparams, length, keep_args, has_fields, (f.start, f.end)))
-    }
-
-    fn is_fn_expression(&self, _f: &Rc<Function>) -> bool {
-        self.fn_expr_flag.replace(false)
     }
 
     /// Loads a binding from the scope outside the innermost one.
@@ -2404,10 +2355,6 @@ impl<'a, 'v> Compiler<'a, 'v> {
         }
     }
 
-    fn patch_continues_to(&mut self, target: Label) {
-        self.patch_continues(target);
-    }
-
     fn pop_breakable(&mut self, cont: Label) {
         let end = self.here();
         if let Some(Ctx::Breakable { breaks, continues, .. }) = self.f().ctx.pop() {
@@ -2418,10 +2365,6 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 self.patch(c, cont);
             }
         }
-    }
-
-    fn pop_breakable_at(&mut self, cont: Label) {
-        self.pop_breakable(cont);
     }
 
     /// Pops a breakable context, returning its break jumps (to patch).
@@ -2505,7 +2448,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         // Suspend every try region inside the crossed contexts first.
         for i in (from..n).rev() {
             match &self.fr().ctx[i] {
-                Ctx::Finally { try_index, .. } | Ctx::IterClose { try_index, .. } | Ctx::Catch { try_index } => {
+                Ctx::Finally { try_index, .. } | Ctx::Catch { try_index } => {
                     let ti = *try_index;
                     self.suspend_try(ti);
                     suspended.push(ti);
@@ -2522,14 +2465,6 @@ impl<'a, 'v> Compiler<'a, 'v> {
                     let r = self.block(body, None);
                     self.f().ctx.extend(saved);
                     r?;
-                }
-                Ctx::IterClose { reg, is_async, .. } => {
-                    let (reg, is_async) = (*reg, *is_async);
-                    if is_async {
-                        self.async_iterator_close(reg)?;
-                    } else {
-                        self.emit(Op::IteratorClose(reg));
-                    }
                 }
                 Ctx::Breakable { iter: Some((reg, ti, is_async)), .. } => {
                     let (reg, ti, is_async) = (*reg, *ti, *is_async);
@@ -2551,7 +2486,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
 
     /// `return` with the value in acc, running finally blocks.
     pub fn emit_return(&mut self, _pos: Option<Pos>) -> CResult<()> {
-        let has_cleanup = self.fr().ctx.iter().any(|c| matches!(c, Ctx::Finally { .. } | Ctx::IterClose { .. } | Ctx::Breakable { iter: Some(_), .. }));
+        let has_cleanup = self.fr().ctx.iter().any(|c| matches!(c, Ctx::Finally { .. } | Ctx::Breakable { iter: Some(_), .. }));
         let derived = self.fr().derived;
         if self.fr().is_async && self.fr().is_generator {
             // Async generator: `return x` awaits x.

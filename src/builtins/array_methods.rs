@@ -693,7 +693,7 @@ fn last_index_of(vm: &mut Vm, this: Value, args: &[Value], _: Value) -> JsResult
         return Ok(Value::int(-1));
     }
     let search = arg(args, 0);
-    let mut n = if args.len() > 1 {
+    let n = if args.len() > 1 {
         vm.to_integer_or_infinity(arg(args, 1))?
     } else {
         len as f64 - 1.0
