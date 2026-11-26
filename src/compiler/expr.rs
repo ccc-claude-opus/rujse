@@ -155,6 +155,18 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 self.free_to(base);
             }
             ExprKind::Member { obj, prop, optional } => {
+                // `local.x`: read the local's register directly (nothing is
+                // evaluated between reading the object and the lookup).
+                let simple_key = match prop {
+                    MemberProp::Name(_) | MemberProp::Private(_) => true,
+                    MemberProp::Computed(k) => Self::is_simple(k),
+                };
+                if !*optional && simple_key {
+                    if let Some(r) = self.direct_reg(obj) {
+                        self.member_get(r, prop, e.pos)?;
+                        return Ok(());
+                    }
+                }
                 self.expr(obj)?;
                 if *optional {
                     self.chain_jump();
@@ -326,7 +338,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
             MemberProp::Name(n) => {
                 let k = self.name_const(n);
                 self.pos(pos);
-                self.emit(Op::GetNamed(r, k));
+                self.emit(Op::GetNamed(r, k, 0));
             }
             MemberProp::Computed(k) => {
                 self.expr(k)?;
@@ -609,7 +621,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 match prop {
                     MemberProp::Name(n) => {
                         let k = self.name_const(n);
-                        self.emit(Op::GetNamed(r, k));
+                        self.emit(Op::GetNamed(r, k, 0));
                     }
                     MemberProp::Computed(k) => {
                         self.expr(k)?;
@@ -630,7 +642,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 match prop {
                     MemberProp::Name(n) => {
                         let k = self.name_const(n);
-                        self.emit(Op::SetNamed(r, k));
+                        self.emit(Op::SetNamed(r, k, 0));
                     }
                     MemberProp::Computed(_) => {
                         self.emit(Op::SetKeyed(r, rk));
@@ -784,7 +796,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                     match prop {
                         MemberProp::Name(n) => {
                             let k = self.name_const(n);
-                            self.emit(Op::GetNamed(r, k));
+                            self.emit(Op::GetNamed(r, k, 0));
                         }
                         MemberProp::Computed(_) => {
                             self.emit(Op::Ldar(rk));
@@ -820,7 +832,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 match prop {
                     MemberProp::Name(n) => {
                         let k = self.name_const(n);
-                        self.emit(Op::SetNamed(r, k));
+                        self.emit(Op::SetNamed(r, k, 0));
                     }
                     MemberProp::Computed(_) => {
                         self.emit(Op::SetKeyed(r, rk));
@@ -1207,7 +1219,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         let to_throw = self.emit(Op::JmpIfIntEq(kind, 1, 0));
         // kind 2: return
         let kret = self.name_const("return");
-        self.emit(Op::GetNamed(it, kret));
+        self.emit(Op::GetNamed(it, kret, 0));
         let has_ret = self.emit(Op::JmpNotNullish(0));
         // No return method: return val (awaited in async generators).
         self.emit(Op::Ldar(val));
@@ -1223,7 +1235,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         // throw
         self.patch_here(to_throw);
         let kthrow = self.name_const("throw");
-        self.emit(Op::GetNamed(it, kthrow));
+        self.emit(Op::GetNamed(it, kthrow, 0));
         let has_throw = self.emit(Op::JmpNotNullish(0));
         // No throw method: close the iterator, then TypeError.
         if is_async {
@@ -1300,7 +1312,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
     fn async_iterator_close_for_ystar(&mut self, it: Reg) -> CResult<()> {
         let ret = self.alloc_reg();
         let k = self.name_const("return");
-        self.emit(Op::GetNamed(it, k));
+        self.emit(Op::GetNamed(it, k, 0));
         let skip = self.emit(Op::JmpNullish(0));
         self.emit(Op::Star(ret));
         let call = self.alloc_regs(2);
@@ -1344,7 +1356,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                             self.expr(value)?;
                         }
                         let k = self.value_const(kv);
-                        self.emit(Op::DefineNamed(r, k));
+                        self.emit(Op::DefineNamed(r, k, 0));
                     }
                 },
                 ObjProp::Method { key, kind, func } => {
@@ -1494,7 +1506,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                                 self.emit(Op::LdaConst(k));
                                 self.emit(Op::Star(keys + i as u16));
                             }
-                            self.emit(Op::GetNamed(src, k));
+                            self.emit(Op::GetNamed(src, k, 0));
                             self.element(&pp.target, pp.default.as_ref(), init)?;
                         }
                     }
@@ -1573,7 +1585,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                     MemberProp::Name(n) => {
                         let k = self.name_const(n);
                         self.emit(Op::Ldar(v));
-                        self.emit(Op::SetNamed(r, k));
+                        self.emit(Op::SetNamed(r, k, 0));
                     }
                     MemberProp::Computed(k) => {
                         let rk = self.alloc_reg();

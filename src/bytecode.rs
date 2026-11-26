@@ -104,8 +104,9 @@ pub enum Op {
     /// Declares a `var` created by sloppy direct eval in a function.
     DeclareEvalVar(K),
     // ----- properties
-    GetNamed(Reg, K),
-    SetNamed(Reg, K),
+    /// (object, name, inline cache index; assigned by `Code` creation).
+    GetNamed(Reg, K, u32),
+    SetNamed(Reg, K, u32),
     /// `acc = r[acc]`.
     GetKeyed(Reg),
     /// `obj[key] = acc` (obj, key).
@@ -140,7 +141,7 @@ pub enum Op {
     /// Appends a hole to the array in `r`.
     ArrayHole(Reg),
     /// Defines data property `K` of `r` = acc (object literal).
-    DefineNamed(Reg, K),
+    DefineNamed(Reg, K, u32),
     /// Defines data property `r2` of `r1` = acc.
     DefineKeyed(Reg, Reg),
     /// Defines a getter/setter: (object, key reg), function in acc.
@@ -458,6 +459,9 @@ pub enum Ic {
     /// has `shape` (so no own property shadows it), its prototype is
     /// still `proto` and that has `proto_shape`.
     Proto { shape: ShapeId, proto: crate::value::ObjId, proto_shape: ShapeId, slot: u32 },
+    /// Defining a new property on an ordinary extensible object of shape
+    /// `from` gives shape `to` (the property goes in a new last slot).
+    Add { from: ShapeId, to: ShapeId },
 }
 
 /// A script's source text and name (URL), shared by all its code.

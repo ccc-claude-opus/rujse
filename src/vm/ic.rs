@@ -107,4 +107,41 @@ impl Vm {
         }
         Ok(())
     }
+
+    /// `DefineNamed` (object literals, class fields) through an `Add`
+    /// entry: a new data property with default attributes.
+    #[inline]
+    pub fn define_ic(&mut self, o: ObjId, ic: Ic, v: Value) -> bool {
+        let Ic::Add { from, to } = ic else { return false };
+        let ob = self.obj_mut(o);
+        if !matches!(ob.class, Class::Ordinary) || !ob.extensible {
+            return false;
+        }
+        match &mut ob.props {
+            Props::Shaped { shape, slots } if *shape == from => {
+                *shape = to;
+                slots.push(v);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `DefineNamed` slow path: CreateDataPropertyOrThrow, then cache the
+    /// shape transition it made.
+    pub fn define_named_cached(&mut self, code: &Code, k: usize, o: ObjId, key: Key, v: Value) -> JsResult<()> {
+        let before = match &self.obj(o).props {
+            Props::Shaped { shape, .. } if matches!(self.obj(o).class, Class::Ordinary) && self.obj(o).extensible => Some(*shape),
+            _ => None,
+        };
+        self.create_data_property_or_throw(o, key, v)?;
+        if let (Some(from), Props::Shaped { shape: to, .. }) = (before, &self.obj(o).props) {
+            let to = *to;
+            let s = self.shape(to);
+            if s.parent == Some(from) && s.key == Some(key) && s.attrs == attr::DEFAULT {
+                code.ics[k].set(Ic::Add { from, to });
+            }
+        }
+        Ok(())
+    }
 }

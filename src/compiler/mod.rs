@@ -658,7 +658,16 @@ impl<'a, 'v> Compiler<'a, 'v> {
     fn finish(&mut self, name: Value, nparams: u16, length: u16, keep_args: bool, has_fields: bool, src: (u32, u32)) -> Rc<Code> {
         let mut f = self.funcs.pop().unwrap();
         peephole::optimize(&mut f.ops, &mut f.handlers, &mut f.lines);
-        let ics = (0..f.consts.len()).map(|_| Cell::new(crate::bytecode::Ic::Empty)).collect();
+        // Inline caches: one per constant (global names), then one per
+        // named property access site.
+        let mut nics = f.consts.len() as u32;
+        for op in f.ops.iter_mut() {
+            if let Op::GetNamed(_, _, ic) | Op::SetNamed(_, _, ic) | Op::DefineNamed(_, _, ic) = op {
+                *ic = nics;
+                nics += 1;
+            }
+        }
+        let ics = (0..nics).map(|_| Cell::new(crate::bytecode::Ic::Empty)).collect();
         Rc::new(Code {
             ops: f.ops,
             consts: f.consts,
@@ -2542,7 +2551,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         // return = iterator.return; if present: await call; check object.
         let ret = self.alloc_reg();
         let k = self.name_const("return");
-        self.emit(Op::GetNamed(it, k));
+        self.emit(Op::GetNamed(it, k, 0));
         let skip = self.emit(Op::JmpNullish(0));
         self.emit(Op::Star(ret));
         let call = self.alloc_regs(2);
@@ -2565,7 +2574,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         let ti = self.begin_try(inner);
         let ret = self.alloc_reg();
         let k = self.name_const("return");
-        self.emit(Op::GetNamed(it, k));
+        self.emit(Op::GetNamed(it, k, 0));
         let skip = self.emit(Op::JmpNullish(0));
         self.emit(Op::Star(ret));
         let call = self.alloc_regs(2);

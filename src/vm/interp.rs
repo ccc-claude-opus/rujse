@@ -513,21 +513,21 @@ impl Vm {
                     Op::StaName(k, strict) => tri!(self.set_name(fi, konst!(k).as_string().unwrap(), acc, strict)),
                     Op::DeleteName(k) => acc = Value::bool(tri!(self.delete_name(fi, konst!(k).as_string().unwrap()))),
                     Op::DeclareEvalVar(_) => {}
-                    Op::GetNamed(o, k) => {
+                    Op::GetNamed(o, k, ic) => {
                         let obj = r!(o);
-                        acc = match self.prop_ic_load(obj, code.ics[k as usize].get()) {
+                        acc = match self.prop_ic_load(obj, code.ics[ic as usize].get()) {
                             Some(v) => v,
                             None => {
                                 let key = name_key!(k);
-                                tri!(self.get_named_cached(&code, k as usize, obj, key))
+                                tri!(self.get_named_cached(&code, ic as usize, obj, key))
                             }
                         };
                     }
-                    Op::SetNamed(o, k) => {
+                    Op::SetNamed(o, k, ic) => {
                         let obj = r!(o);
-                        if !self.prop_ic_store(obj, code.ics[k as usize].get(), acc) {
+                        if !self.prop_ic_store(obj, code.ics[ic as usize].get(), acc) {
                             let key = name_key!(k);
-                            tri!(self.set_named_cached(&code, k as usize, obj, key, acc));
+                            tri!(self.set_named_cached(&code, ic as usize, obj, key, acc));
                         }
                     }
                     Op::GetKeyed(o) => {
@@ -621,10 +621,12 @@ impl Vm {
                         self.frames[fi].pc = pc as u32;
                         tri!(self.spread_into(o, acc));
                     }
-                    Op::DefineNamed(o, k) => {
+                    Op::DefineNamed(o, k, ic) => {
                         let obj = r!(o).as_object().unwrap();
-                        let key = name_key!(k);
-                        tri!(self.create_data_property_or_throw(obj, key, acc));
+                        if !self.define_ic(obj, code.ics[ic as usize].get(), acc) {
+                            let key = name_key!(k);
+                            tri!(self.define_named_cached(&code, ic as usize, obj, key, acc));
+                        }
                     }
                     Op::DefineKeyed(o, kr) => {
                         let obj = r!(o).as_object().unwrap();
@@ -1313,11 +1315,15 @@ impl Vm {
             }
             Class::Native(n) => {
                 let f = n.f;
-                let args: Vec<Value> = self.stack[abase..abase + argc].to_vec();
+                // The arguments are copied out of the stack (the native gets
+                // `&mut Vm`) into a reused buffer.
+                let mut args = self.take_args_vec();
+                args.extend_from_slice(&self.stack[abase..abase + argc]);
                 let saved_sp = self.sp;
                 self.sp = abase + argc;
                 let r = self.native_call(f, callee, this, &args, Value::UNDEFINED);
                 self.sp = saved_sp;
+                self.give_args_vec(args);
                 r.map(Some)
             }
             _ => {

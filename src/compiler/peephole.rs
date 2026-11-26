@@ -137,6 +137,25 @@ pub fn optimize(ops: &mut Vec<Op>, handlers: &mut [Handler], lines: &mut Vec<(u3
                 }
             }
         }
+        // LdaUninit; Star r; (constant); Star r  ->  (constant); Star r
+        // (a `let` initialized with a constant: the TDZ marker is dead).
+        if fusable(i, 4) {
+            if let (Op::LdaUninit, Op::Star(a), Op::Star(b)) = (&ops[i], &ops[i + 1], &ops[i + 3]) {
+                let constant = matches!(
+                    ops[i + 2],
+                    Op::LdaInt(_) | Op::LdaUndef | Op::LdaNull | Op::LdaTrue | Op::LdaFalse | Op::LdaConst(_)
+                );
+                if a == b && constant {
+                    map[i + 1] = out.len() as u32;
+                    map[i + 2] = out.len() as u32;
+                    out.push(ops[i + 2]);
+                    map[i + 3] = out.len() as u32;
+                    out.push(ops[i + 3]);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
         // Ldar a; Star b; (op that overwrites acc)  ->  Mov a b
         if fusable(i, 2) && i + 2 < n {
             if let (Op::Ldar(a), Op::Star(b)) = (&ops[i], &ops[i + 1]) {
