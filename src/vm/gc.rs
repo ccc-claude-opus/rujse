@@ -121,6 +121,7 @@ impl Vm {
         m.values.push(self.current_native);
         m.values.extend_from_slice(&self.kept_alive);
         m.values.extend(self.raw_json.iter().map(|o| Value::object(*o)));
+        m.values.extend(self.symbol_holders.values().map(|o| Value::object(*o)));
         m.values.extend(self.join_stack.iter().map(|o| Value::object(*o)));
         self.modules.trace(&mut m.values, &mut m.envs);
         crate::debug::trace_roots(self, &mut m.values);

@@ -399,6 +399,8 @@ impl Vm {
             self.native_roots.push(job.func);
             let r = self.call(job.func, job.this, &job.args);
             self.native_roots.pop();
+            // ClearKeptObjects (WeakRef targets kept alive during a job).
+            self.kept_alive.clear();
             match r {
                 Ok(_) => {}
                 Err(Throw::Terminate) => return Err(Throw::Terminate),

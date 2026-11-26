@@ -211,6 +211,8 @@ pub struct Vm {
     pub join_stack: Vec<ObjId>,
     /// Objects made by JSON.rawJSON.
     pub raw_json: Vec<ObjId>,
+    /// Symbols used as weak collection keys -> their holder object.
+    pub symbol_holders: BTreeMap<u32, ObjId>,
 }
 
 impl Vm {
@@ -258,6 +260,7 @@ impl Vm {
             global_this: ObjId(0),
             join_stack: Vec::new(),
             raw_json: Vec::new(),
+            symbol_holders: BTreeMap::new(),
         });
         vm.shapes.push(Shape { parent: None, key: None, attrs: 0, len: 0, transitions: Vec::new(), table: None });
         realm::init(&mut vm);
