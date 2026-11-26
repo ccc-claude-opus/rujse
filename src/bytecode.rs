@@ -2,10 +2,12 @@
 //! Most instructions read or write the accumulator; binary operators take
 //! the left operand from a register (`acc = r OP acc`).
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
+use crate::object::{Key, ShapeId};
 use crate::value::Value;
 
 pub type Reg = u16;
@@ -431,6 +433,27 @@ pub struct Code {
     pub src_end: u32,
     /// Times called; hot code becomes a JIT candidate (later).
     pub calls: Cell<u32>,
+    /// Inline caches, one per constant: the ops that look a name up
+    /// (globals, named properties) cache where they found it under the
+    /// index of the name's constant.
+    pub ics: Box<[Cell<Ic>]>,
+}
+
+/// An inline cache entry. Every hit is validated against the current
+/// state before it is used, so a stale entry only costs a slow lookup.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Ic {
+    #[default]
+    Empty,
+    /// A script-level `let`/`const`/`class` binding: index of its cell.
+    Lex(u32),
+    /// A data property of the global object in dictionary mode: entry
+    /// index (checked against the key), while no global lexical binding
+    /// has been added since (`epoch`) that could shadow it.
+    GlobalDict { idx: u32, key: Key, epoch: u32 },
+    /// A data property in a shaped object: the slot for objects of
+    /// `shape` (for globals, also checked against `epoch`).
+    Slot { shape: ShapeId, slot: u32, epoch: u32, writable: bool },
 }
 
 /// A script's source text and name (URL), shared by all its code.

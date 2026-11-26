@@ -658,6 +658,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
     fn finish(&mut self, name: Value, nparams: u16, length: u16, keep_args: bool, has_fields: bool, src: (u32, u32)) -> Rc<Code> {
         let mut f = self.funcs.pop().unwrap();
         peephole::optimize(&mut f.ops, &mut f.handlers, &mut f.lines);
+        let ics = (0..f.consts.len()).map(|_| Cell::new(crate::bytecode::Ic::Empty)).collect();
         Rc::new(Code {
             ops: f.ops,
             consts: f.consts,
@@ -678,6 +679,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
             src_start: src.0,
             src_end: src.1,
             calls: Cell::new(0),
+            ics,
         })
     }
 

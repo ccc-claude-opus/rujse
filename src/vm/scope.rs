@@ -6,12 +6,128 @@ use alloc::vec::Vec;
 
 use super::props::PropDesc;
 use super::*;
-use crate::bytecode::{Const, GlobalDecls};
-use crate::object::{attr, Key};
+use crate::bytecode::{Code, Const, GlobalDecls, Ic};
+use crate::object::{attr, Key, Props};
 
 impl Vm {
+    // ----- global inline caches ------------------------------------------
+
+    /// The value an inline cache entry points to, if it is still valid.
+    #[inline]
+    pub fn global_ic_load(&self, ic: Ic) -> Option<Value> {
+        match ic {
+            Ic::Lex(i) => {
+                let v = self.global_cells[i as usize].0;
+                if v.is_uninit() { None } else { Some(v) }
+            }
+            Ic::GlobalDict { idx, key, epoch } if epoch == self.global_epoch => match &self.obj(self.global).props {
+                Props::Dict(d) => match d.entries.get(idx as usize) {
+                    Some(Some((k, v, a))) if *k == key && a & attr::ACCESSOR == 0 => Some(*v),
+                    _ => None,
+                },
+                _ => None,
+            },
+            Ic::Slot { shape, slot, epoch, .. } if epoch == self.global_epoch => match &self.obj(self.global).props {
+                Props::Shaped { shape: s, slots } if *s == shape => slots.get(slot as usize).copied(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Stores through an inline cache entry; false if it does not apply
+    /// (then the full assignment runs).
+    #[inline]
+    pub fn global_ic_store(&mut self, ic: Ic, v: Value) -> bool {
+        match ic {
+            Ic::Lex(i) => {
+                let c = &mut self.global_cells[i as usize];
+                if c.1 || c.0.is_uninit() {
+                    return false;
+                }
+                c.0 = v;
+                true
+            }
+            Ic::GlobalDict { idx, key, epoch } if epoch == self.global_epoch => {
+                let g = self.global;
+                match &mut self.obj_mut(g).props {
+                    Props::Dict(d) => match d.entries.get_mut(idx as usize) {
+                        Some(Some((k, slot, a))) if *k == key && *a & (attr::ACCESSOR | attr::WRITABLE) == attr::WRITABLE => {
+                            *slot = v;
+                            true
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                }
+            }
+            Ic::Slot { shape, slot, epoch, writable: true } if epoch == self.global_epoch => {
+                let g = self.global;
+                match &mut self.obj_mut(g).props {
+                    Props::Shaped { shape: s, slots } if *s == shape => match slots.get_mut(slot as usize) {
+                        Some(x) => {
+                            *x = v;
+                            true
+                        }
+                        None => false,
+                    },
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Where the global binding `name` lives now, as a cache entry.
+    fn global_ic_entry(&mut self, name: StrId) -> Ic {
+        if let Some(&i) = self.global_lex.get(&name) {
+            return Ic::Lex(i);
+        }
+        let key = self.key_from_str(name);
+        if let Key::Index(_) = key {
+            return Ic::Empty;
+        }
+        let epoch = self.global_epoch;
+        match &self.obj(self.global).props {
+            Props::Dict(d) => match d.index.get(&key) {
+                Some(&idx) => match d.entries.get(idx as usize) {
+                    Some(Some((_, _, a))) if a & attr::ACCESSOR == 0 => Ic::GlobalDict { idx, key, epoch },
+                    _ => Ic::Empty,
+                },
+                None => Ic::Empty,
+            },
+            Props::Shaped { shape, .. } => match self.shape_lookup(*shape, key) {
+                Some((slot, a)) if a & attr::ACCESSOR == 0 => Ic::Slot { shape: *shape, slot, epoch, writable: a & attr::WRITABLE != 0 },
+                _ => Ic::Empty,
+            },
+        }
+    }
+
+    /// `LdaGlobal`/`LdaGlobalOrUndef` with the cache of constant `k`.
+    pub fn get_global_cached(&mut self, code: &Code, k: usize, name: StrId, throw: bool) -> JsResult<Value> {
+        if let Some(v) = self.global_ic_load(code.ics[k].get()) {
+            return Ok(v);
+        }
+        let v = self.get_global(name, throw)?;
+        let e = self.global_ic_entry(name);
+        code.ics[k].set(e);
+        Ok(v)
+    }
+
+    /// `StaGlobal` with the cache of constant `k`.
+    pub fn set_global_cached(&mut self, code: &Code, k: usize, name: StrId, v: Value, strict: bool) -> JsResult<()> {
+        if self.global_ic_store(code.ics[k].get(), v) {
+            return Ok(());
+        }
+        self.set_global(name, v, strict)?;
+        let e = self.global_ic_entry(name);
+        code.ics[k].set(e);
+        Ok(())
+    }
+
     pub fn get_global(&mut self, name: StrId, throw: bool) -> JsResult<Value> {
-        if let Some(&(v, _)) = self.global_lex.get(&name) {
+        if let Some(&i) = self.global_lex.get(&name) {
+            let v = self.global_cells[i as usize].0;
             if v.is_uninit() {
                 return Err(self.tdz_error(Value::str(name)));
             }
@@ -33,7 +149,8 @@ impl Vm {
     }
 
     pub fn set_global(&mut self, name: StrId, v: Value, strict: bool) -> JsResult<()> {
-        if let Some(&(cur, is_const)) = self.global_lex.get(&name) {
+        if let Some(&i) = self.global_lex.get(&name) {
+            let (cur, is_const) = self.global_cells[i as usize];
             if cur.is_uninit() {
                 return Err(self.tdz_error(Value::str(name)));
             }
@@ -41,7 +158,7 @@ impl Vm {
                 let n = self.str(name).to_rust_lossy();
                 return Err(self.type_error(&alloc::format!("Assignment to constant variable '{n}'.")));
             }
-            self.global_lex.insert(name, (v, false));
+            self.global_cells[i as usize].0 = v;
             return Ok(());
         }
         let k = self.key_from_str(name);
@@ -142,7 +259,10 @@ impl Vm {
             }
         }
         for &(n, c) in &d.lexicals {
-            self.global_lex.insert(n.as_string().unwrap(), (Value::UNINIT, c));
+            let i = self.global_cells.len() as u32;
+            self.global_cells.push((Value::UNINIT, c));
+            self.global_lex.insert(n.as_string().unwrap(), i);
+            self.global_epoch = self.global_epoch.wrapping_add(1);
         }
         Ok(())
     }

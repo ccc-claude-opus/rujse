@@ -100,8 +100,10 @@ impl Vm {
         }
         m.values.push(Value::object(self.global));
         m.values.push(Value::object(self.global_this));
-        for (k, (v, _)) in &self.global_lex {
+        for k in self.global_lex.keys() {
             m.values.push(Value::str(*k));
+        }
+        for (v, _) in &self.global_cells {
             m.values.push(*v);
         }
         for (k, s) in &self.symbol_registry {
@@ -195,15 +197,24 @@ impl Vm {
         }
     }
 
+    /// Marks a string; an unflattened rope keeps its children alive.
+    fn mark_str(&mut self, s: StrId, m: &mut Marker) {
+        if self.strings.mark(s.0) {
+            if let Some(r) = self.strings.get(s.0).unflattened() {
+                let (l, rt) = (r.left, r.right);
+                m.values.push(Value::str(l));
+                m.values.push(Value::str(rt));
+            }
+        }
+    }
+
     fn mark_value(&mut self, v: Value, m: &mut Marker) {
         match v.kind() {
-            Kind::Str(s) => {
-                self.strings.mark(s.0);
-            }
+            Kind::Str(s) => self.mark_str(s, m),
             Kind::Symbol(s) => {
                 if self.symbols.mark(s.0) {
                     if let Some(d) = self.symbols.get(s.0).description {
-                        self.strings.mark(d.0);
+                        self.mark_str(d, m);
                     }
                 }
             }

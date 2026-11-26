@@ -4,16 +4,42 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::OnceCell;
 
+use crate::value::StrId;
+
+/// Flat storage of the code units.
 #[derive(Clone, Debug)]
 pub enum StrData {
     Latin1(Box<[u8]>),
     Utf16(Box<[u16]>),
 }
 
+/// How a string is held: flat, or as a concatenation not yet copied.
+#[derive(Clone, Debug)]
+pub enum Repr {
+    Flat(StrData),
+    Rope(Box<Rope>),
+}
+
+/// `left + right`, built by `+` in O(1). `Vm::str` copies the units into
+/// `flat` on first access; from then on the children are not needed (the
+/// GC stops tracing them).
+#[derive(Clone, Debug)]
+pub struct Rope {
+    pub left: StrId,
+    pub right: StrId,
+    pub len: u32,
+    pub latin1: bool,
+    pub flat: OnceCell<StrData>,
+}
+
+/// Concatenations at least this long become ropes.
+pub const ROPE_MIN: usize = 32;
+
 #[derive(Clone, Debug)]
 pub struct JsStr {
-    pub data: StrData,
+    pub repr: Repr,
     /// Hash of the code units (0 until computed; see `hash_units`).
     pub hash: u32,
     /// The string is in the atom table (used as a property key).
@@ -32,11 +58,11 @@ impl JsStr {
     }
 
     pub fn latin1(b: Box<[u8]>) -> JsStr {
-        JsStr { data: StrData::Latin1(b), hash: 0, atom: false }
+        JsStr { repr: Repr::Flat(StrData::Latin1(b)), hash: 0, atom: false }
     }
 
     pub fn utf16(u: Box<[u16]>) -> JsStr {
-        JsStr { data: StrData::Utf16(u), hash: 0, atom: false }
+        JsStr { repr: Repr::Flat(StrData::Utf16(u)), hash: 0, atom: false }
     }
 
     /// From UTF-16 units, choosing Latin-1 storage when possible.
@@ -56,11 +82,35 @@ impl JsStr {
         }
     }
 
+    pub fn rope(left: StrId, right: StrId, len: usize, latin1: bool) -> JsStr {
+        let r = Rope { left, right, len: len as u32, latin1, flat: OnceCell::new() };
+        JsStr { repr: Repr::Rope(Box::new(r)), hash: 0, atom: false }
+    }
+
+    /// The rope, while its units have not been copied yet.
+    #[inline]
+    pub fn unflattened(&self) -> Option<&Rope> {
+        match &self.repr {
+            Repr::Rope(r) if r.flat.get().is_none() => Some(r),
+            _ => None,
+        }
+    }
+
+    /// The flat units. Strings reached through `Vm::str` are always flat.
+    #[inline]
+    fn d(&self) -> &StrData {
+        match &self.repr {
+            Repr::Flat(d) => d,
+            Repr::Rope(r) => r.flat.get().expect("rope read before Vm::str flattened it"),
+        }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
-        match &self.data {
-            StrData::Latin1(b) => b.len(),
-            StrData::Utf16(u) => u.len(),
+        match &self.repr {
+            Repr::Rope(r) => r.len as usize,
+            Repr::Flat(StrData::Latin1(b)) => b.len(),
+            Repr::Flat(StrData::Utf16(u)) => u.len(),
         }
     }
 
@@ -71,7 +121,7 @@ impl JsStr {
 
     #[inline]
     pub fn at(&self, i: usize) -> u16 {
-        match &self.data {
+        match self.d() {
             StrData::Latin1(b) => b[i] as u16,
             StrData::Utf16(u) => u[i],
         }
@@ -86,12 +136,31 @@ impl JsStr {
     }
 
     pub fn is_latin1(&self) -> bool {
-        matches!(self.data, StrData::Latin1(_))
+        match &self.repr {
+            Repr::Rope(r) => r.latin1,
+            Repr::Flat(d) => matches!(d, StrData::Latin1(_)),
+        }
+    }
+
+    /// Appends the units to a Latin-1 buffer (the string must be flat and
+    /// Latin-1).
+    pub fn push_latin1(&self, out: &mut Vec<u8>) {
+        if let StrData::Latin1(b) = self.d() {
+            out.extend_from_slice(b);
+        }
+    }
+
+    /// Appends the units to a UTF-16 buffer (the string must be flat).
+    pub fn push_units(&self, out: &mut Vec<u16>) {
+        match self.d() {
+            StrData::Latin1(b) => out.extend(b.iter().map(|&c| c as u16)),
+            StrData::Utf16(u) => out.extend_from_slice(u),
+        }
     }
 
     /// The bytes, when every unit is ASCII (zero-copy `&str`).
     pub fn as_ascii(&self) -> Option<&str> {
-        match &self.data {
+        match self.d() {
             StrData::Latin1(b) if b.is_ascii() => core::str::from_utf8(b).ok(),
             _ => None,
         }
@@ -99,7 +168,7 @@ impl JsStr {
 
     /// Converts to Rust UTF-8, replacing lone surrogates with U+FFFD.
     pub fn to_rust_lossy(&self) -> String {
-        match &self.data {
+        match self.d() {
             StrData::Latin1(b) => b.iter().map(|&c| c as char).collect(),
             StrData::Utf16(u) => char::decode_utf16(u.iter().copied())
                 .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
@@ -130,7 +199,7 @@ impl JsStr {
     }
 
     pub fn eq_units(&self, other: &JsStr) -> bool {
-        match (&self.data, &other.data) {
+        match (self.d(), other.d()) {
             (StrData::Latin1(a), StrData::Latin1(b)) => a == b,
             (StrData::Utf16(a), StrData::Utf16(b)) => a == b,
             _ => self.len() == other.len() && self.units().eq(other.units()),
@@ -138,7 +207,7 @@ impl JsStr {
     }
 
     pub fn eq_str(&self, s: &str) -> bool {
-        match &self.data {
+        match self.d() {
             StrData::Latin1(b) if s.is_ascii() => &**b == s.as_bytes(),
             _ => self.units().eq(s.encode_utf16()),
         }
@@ -146,7 +215,7 @@ impl JsStr {
 
     /// Code-unit order (the `<` of strings).
     pub fn cmp_units(&self, other: &JsStr) -> core::cmp::Ordering {
-        match (&self.data, &other.data) {
+        match (self.d(), other.d()) {
             (StrData::Latin1(a), StrData::Latin1(b)) => a.cmp(b),
             _ => self.units().cmp(other.units()),
         }
@@ -180,7 +249,7 @@ impl JsStr {
     }
 
     pub fn concat(&self, other: &JsStr) -> JsStr {
-        match (&self.data, &other.data) {
+        match (self.d(), other.d()) {
             (StrData::Latin1(a), StrData::Latin1(b)) => {
                 let mut v = Vec::with_capacity(a.len() + b.len());
                 v.extend_from_slice(a);
@@ -197,7 +266,7 @@ impl JsStr {
     }
 
     pub fn slice(&self, start: usize, end: usize) -> JsStr {
-        match &self.data {
+        match self.d() {
             StrData::Latin1(b) => JsStr::latin1(b[start..end].into()),
             StrData::Utf16(u) => JsStr::from_units(&u[start..end]),
         }

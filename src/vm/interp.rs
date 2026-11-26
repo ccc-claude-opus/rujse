@@ -312,23 +312,14 @@ impl Vm {
                     Op::Nop => {}
                     Op::BinRR { kind, dst, lhs, rhs } => {
                         let (a, b) = (r!(lhs), r!(rhs));
-                        acc = match (a.as_int(), b.as_int(), kind) {
-                            (Some(x), Some(y), BinKind::Add) => match x.checked_add(y) {
-                                Some(v) => Value::int(v),
-                                None => Value::number(x as f64 + y as f64),
-                            },
-                            (Some(x), Some(y), BinKind::Sub) => match x.checked_sub(y) {
-                                Some(v) => Value::int(v),
-                                None => Value::number(x as f64 - y as f64),
-                            },
-                            (Some(x), Some(y), BinKind::Lt) => Value::bool(x < y),
-                            (Some(x), Some(y), BinKind::Le) => Value::bool(x <= y),
-                            (Some(x), Some(y), BinKind::Gt) => Value::bool(x > y),
-                            (Some(x), Some(y), BinKind::Ge) => Value::bool(x >= y),
-                            (Some(x), Some(y), BinKind::BitAnd) => Value::int(x & y),
-                            (Some(x), Some(y), BinKind::BitOr) => Value::int(x | y),
-                            (Some(x), Some(y), BinKind::BitXor) => Value::int(x ^ y),
-                            _ => {
+                        let fast = match (a.as_int(), b.as_int()) {
+                            (Some(x), Some(y)) => int_binop(kind, x, y),
+                            _ if a.is_number() && b.is_number() => num_binop(kind, a.num(), b.num()),
+                            _ => None,
+                        };
+                        acc = match fast {
+                            Some(v) => v,
+                            None => {
                                 self.frames[fi].pc = pc as u32;
                                 tri!(self.bin_generic(kind, a, b))
                             }
@@ -338,18 +329,11 @@ impl Vm {
                     Op::CmpJmp { kind, lhs, rhs, target, when } => {
                         let (a, b) = (r!(lhs), r!(rhs));
                         let t = match (a.as_int(), b.as_int()) {
-                            (Some(x), Some(y)) => match kind {
-                                BinKind::Lt => x < y,
-                                BinKind::Le => x <= y,
-                                BinKind::Gt => x > y,
-                                BinKind::Ge => x >= y,
-                                BinKind::StrictEq => x == y,
-                                _ => x != y,
-                            },
+                            (Some(x), Some(y)) => int_compare(kind, x, y),
+                            _ if a.is_number() && b.is_number() => num_compare(kind, a.num(), b.num()),
                             _ => {
                                 self.frames[fi].pc = pc as u32;
-                                let v = tri!(self.bin_generic(kind, a, b));
-                                v == Value::TRUE
+                                tri!(self.bin_generic(kind, a, b)) == Value::TRUE
                             }
                         };
                         acc = Value::bool(t);
@@ -360,20 +344,19 @@ impl Vm {
                             pc = target as usize;
                         }
                     }
-                    Op::IncReg(x) | Op::DecReg(x) => {
+                    Op::IncReg(x) => {
                         let v = r!(x);
-                        let up = matches!(op, Op::IncReg(_));
                         acc = match v.as_int() {
-                            Some(i) if up && i < i32::MAX => Value::int(i + 1),
-                            Some(i) if !up && i > i32::MIN => Value::int(i - 1),
-                            _ => {
-                                let n = if v.is_number() || v.is_bigint() { v } else { tri!(self.to_numeric(v)) };
-                                if n.is_bigint() {
-                                    tri!(crate::builtins::bigint::add_int(self, n, if up { 1 } else { -1 }))
-                                } else {
-                                    Value::number(n.num() + if up { 1.0 } else { -1.0 })
-                                }
-                            }
+                            Some(i) if i < i32::MAX => Value::int(i + 1),
+                            _ => tri!(self.inc_dec_slow(v, true)),
+                        };
+                        r!(x) = acc;
+                    }
+                    Op::DecReg(x) => {
+                        let v = r!(x);
+                        acc = match v.as_int() {
+                            Some(i) if i > i32::MIN => Value::int(i - 1),
+                            _ => tri!(self.inc_dec_slow(v, false)),
                         };
                         r!(x) = acc;
                     }
@@ -487,14 +470,27 @@ impl Vm {
                         let n = self.display(konst!(k));
                         tri!(Err(self.type_error(&alloc::format!("Assignment to constant variable '{n}'."))));
                     }
-                    Op::LdaGlobal(k) => acc = tri!(self.get_global(konst!(k).as_string().unwrap(), true)),
-                    Op::LdaGlobalOrUndef(k) => acc = tri!(self.get_global(konst!(k).as_string().unwrap(), false)),
-                    Op::StaGlobal(k, strict) => tri!(self.set_global(konst!(k).as_string().unwrap(), acc, strict)),
+                    Op::LdaGlobal(k) => {
+                        acc = match self.global_ic_load(code.ics[k as usize].get()) {
+                            Some(v) => v,
+                            None => tri!(self.get_global_cached(&code, k as usize, konst!(k).as_string().unwrap(), true)),
+                        }
+                    }
+                    Op::LdaGlobalOrUndef(k) => {
+                        acc = match self.global_ic_load(code.ics[k as usize].get()) {
+                            Some(v) => v,
+                            None => tri!(self.get_global_cached(&code, k as usize, konst!(k).as_string().unwrap(), false)),
+                        }
+                    }
+                    Op::StaGlobal(k, strict) => {
+                        if !self.global_ic_store(code.ics[k as usize].get(), acc) {
+                            tri!(self.set_global_cached(&code, k as usize, konst!(k).as_string().unwrap(), acc, strict));
+                        }
+                    }
                     Op::InitGlobalLex(k) => {
                         let n = konst!(k).as_string().unwrap();
-                        let c = self.global_lex.get(&n).map(|e| e.1).unwrap_or(false);
-                        if self.global_lex.contains_key(&n) {
-                            self.global_lex.insert(n, (acc, c));
+                        if let Some(&i) = self.global_lex.get(&n) {
+                            self.global_cells[i as usize].0 = acc;
                         } else {
                             // A var/function at script level (Annex B copy).
                             let key = self.key_from_str(n);
@@ -1259,6 +1255,18 @@ impl Vm {
     }
 
     /// The generic path of a fused binary instruction.
+    /// `x + 1` / `x - 1` for values that are not small ints.
+    #[inline(never)]
+    fn inc_dec_slow(&mut self, v: Value, up: bool) -> JsResult<Value> {
+        let n = if v.is_number() || v.is_bigint() { v } else { self.to_numeric(v)? };
+        if n.is_bigint() {
+            crate::builtins::bigint::add_int(self, n, if up { 1 } else { -1 })
+        } else {
+            Ok(Value::number(n.num() + if up { 1.0 } else { -1.0 }))
+        }
+    }
+
+    #[inline(never)]
     fn bin_generic(&mut self, kind: BinKind, a: Value, b: Value) -> JsResult<Value> {
         use crate::ast::BinaryOp as B;
         Ok(match kind {
@@ -2062,5 +2070,74 @@ impl Vm {
             }
             return Ok(Some(key));
         }
+    }
+}
+
+/// A fused binary op on two int32 operands, when the result needs no
+/// conversion (None: overflow or an op without an int fast path).
+#[inline(always)]
+fn int_binop(kind: BinKind, x: i32, y: i32) -> Option<Value> {
+    Some(match kind {
+        BinKind::Add => Value::int(x.checked_add(y)?),
+        BinKind::Sub => Value::int(x.checked_sub(y)?),
+        BinKind::Mul => {
+            let p = x.checked_mul(y)?;
+            if p == 0 && (x < 0 || y < 0) {
+                return None; // -0
+            }
+            Value::int(p)
+        }
+        BinKind::StrictEq => Value::bool(x == y),
+        BinKind::StrictNe => Value::bool(x != y),
+        BinKind::Lt => Value::bool(x < y),
+        BinKind::Le => Value::bool(x <= y),
+        BinKind::Gt => Value::bool(x > y),
+        BinKind::Ge => Value::bool(x >= y),
+        BinKind::BitAnd => Value::int(x & y),
+        BinKind::BitOr => Value::int(x | y),
+        BinKind::BitXor => Value::int(x ^ y),
+    })
+}
+
+/// A comparison of two int32 operands (CmpJmp kinds only).
+#[inline(always)]
+fn int_compare(kind: BinKind, x: i32, y: i32) -> bool {
+    match kind {
+        BinKind::Lt => x < y,
+        BinKind::Le => x <= y,
+        BinKind::Gt => x > y,
+        BinKind::Ge => x >= y,
+        BinKind::StrictEq => x == y,
+        _ => x != y,
+    }
+}
+
+/// A fused binary op on two numbers (None: needs the generic path).
+#[inline(always)]
+fn num_binop(kind: BinKind, x: f64, y: f64) -> Option<Value> {
+    Some(match kind {
+        BinKind::Add => Value::number(x + y),
+        BinKind::Sub => Value::number(x - y),
+        BinKind::Mul => Value::number(x * y),
+        BinKind::Lt => Value::bool(x < y),
+        BinKind::Le => Value::bool(x <= y),
+        BinKind::Gt => Value::bool(x > y),
+        BinKind::Ge => Value::bool(x >= y),
+        BinKind::StrictEq => Value::bool(x == y),
+        BinKind::StrictNe => Value::bool(x != y),
+        _ => return None,
+    })
+}
+
+/// A comparison of two numbers (CmpJmp kinds only).
+#[inline(always)]
+fn num_compare(kind: BinKind, x: f64, y: f64) -> bool {
+    match kind {
+        BinKind::Lt => x < y,
+        BinKind::Le => x <= y,
+        BinKind::Gt => x > y,
+        BinKind::Ge => x >= y,
+        BinKind::StrictEq => x == y,
+        _ => x != y,
     }
 }

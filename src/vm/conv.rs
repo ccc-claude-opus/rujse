@@ -542,16 +542,20 @@ impl Vm {
     }
 
     pub fn concat(&mut self, x: StrId, y: StrId) -> Value {
-        if self.str(x).is_empty() {
+        // Lengths without flattening: `s += x` must not copy `s`.
+        let (a, b) = (self.strings.get(x.0), self.strings.get(y.0));
+        if a.is_empty() {
             return Value::str(y);
         }
-        if self.str(y).is_empty() {
+        if b.is_empty() {
             return Value::str(x);
         }
-        let s = self.str(x).concat(self.str(y));
-        if s.len() > (1 << 29) {
-            // Too long: the caller reports a RangeError via to_string.
+        let len = a.len() + b.len();
+        if len >= crate::string::ROPE_MIN {
+            let latin1 = a.is_latin1() && b.is_latin1();
+            return Value::str(self.alloc_string(crate::string::JsStr::rope(x, y, len, latin1)));
         }
+        let s = self.str(x).concat(self.str(y));
         Value::str(self.alloc_string(s))
     }
 

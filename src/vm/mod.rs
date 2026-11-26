@@ -163,8 +163,14 @@ pub struct Vm {
     pub names: realm::Names,
     pub intrinsics: Intrinsics,
     pub global: ObjId,
-    /// Script-level `let`/`const`/`class` bindings: name -> (value, const).
-    pub global_lex: BTreeMap<StrId, (Value, bool)>,
+    /// Script-level `let`/`const`/`class` bindings: name -> index into
+    /// `global_cells` (value, const). Cells are never removed, so inline
+    /// caches may keep their index.
+    pub global_lex: BTreeMap<StrId, u32>,
+    pub global_cells: Vec<(Value, bool)>,
+    /// Bumped whenever a global lexical binding is added (it may shadow a
+    /// global object property that an inline cache points to).
+    pub global_epoch: u32,
     pub symbol_registry: BTreeMap<StrId, SymId>,
     pub stack: Vec<Value>,
     pub sp: usize,
@@ -232,6 +238,8 @@ impl Vm {
             intrinsics: Intrinsics::default(),
             global: ObjId(0),
             global_lex: BTreeMap::new(),
+            global_cells: Vec::new(),
+            global_epoch: 0,
             symbol_registry: BTreeMap::new(),
             stack: Vec::new(),
             sp: 0,
@@ -294,7 +302,10 @@ impl Vm {
     }
 
     pub fn alloc_string(&mut self, s: JsStr) -> StrId {
-        self.alloc_bytes += 32 + s.len() * if s.is_latin1() { 1 } else { 2 };
+        self.alloc_bytes += match s.repr {
+            crate::string::Repr::Rope(_) => 48,
+            _ => 32 + s.len() * if s.is_latin1() { 1 } else { 2 },
+        };
         StrId(self.strings.alloc(s))
     }
 
@@ -323,7 +334,39 @@ impl Vm {
     }
 
     pub fn str(&self, id: StrId) -> &JsStr {
-        self.strings.get(id.0)
+        let s = self.strings.get(id.0);
+        if let Some(r) = s.unflattened() {
+            let _ = r.flat.set(self.flatten(r));
+        }
+        s
+    }
+
+    /// Copies a rope's units (iteratively: ropes built by `s += x` in a
+    /// loop are as deep as the loop is long).
+    fn flatten(&self, r: &crate::string::Rope) -> crate::string::StrData {
+        use crate::string::StrData;
+        let mut stack = alloc::vec![r.right, r.left];
+        if r.latin1 {
+            let mut out: Vec<u8> = Vec::with_capacity(r.len as usize);
+            while let Some(id) = stack.pop() {
+                let s = self.strings.get(id.0);
+                match s.unflattened() {
+                    Some(c) => stack.extend([c.right, c.left]),
+                    None => s.push_latin1(&mut out),
+                }
+            }
+            StrData::Latin1(out.into_boxed_slice())
+        } else {
+            let mut out: Vec<u16> = Vec::with_capacity(r.len as usize);
+            while let Some(id) = stack.pop() {
+                let s = self.strings.get(id.0);
+                match s.unflattened() {
+                    Some(c) => stack.extend([c.right, c.left]),
+                    None => s.push_units(&mut out),
+                }
+            }
+            StrData::Utf16(out.into_boxed_slice())
+        }
     }
 
     pub fn obj(&self, id: ObjId) -> &Object {
@@ -338,7 +381,7 @@ impl Vm {
 
     /// Interns a string (atoms are never collected).
     pub fn intern_id(&mut self, id: StrId) -> StrId {
-        if self.strings.get(id.0).atom {
+        if self.str(id).atom {
             return id;
         }
         let h = self.strings.get_mut(id.0).hash();
@@ -394,7 +437,7 @@ impl Vm {
 
     /// The property key for a string (array index or atom).
     pub fn key_from_str(&mut self, id: StrId) -> Key {
-        if let Some(i) = self.strings.get(id.0).array_index() {
+        if let Some(i) = self.str(id).array_index() {
             return Key::Index(i);
         }
         Key::Str(self.intern_id(id))

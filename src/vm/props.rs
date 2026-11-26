@@ -692,7 +692,8 @@ impl Vm {
         }
         if let Some(s) = v.as_string() {
             if k == Key::Str(self.names.length) {
-                return Ok(Value::from_usize(self.str(s).len()));
+                // No flattening: a rope knows its length.
+                return Ok(Value::from_usize(self.strings.get(s.0).len()));
             }
             if let Key::Index(i) = k {
                 if (i as usize) < self.str(s).len() {
