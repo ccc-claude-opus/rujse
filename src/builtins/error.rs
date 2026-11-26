@@ -255,6 +255,7 @@ pub fn init_global(vm: &mut Vm) {
     vm.method(g, "encodeURI", 1, |vm, _, a, _| uri_encode(vm, arg(a, 0), ""));
     vm.method(g, "decodeURIComponent", 1, |vm, _, a, _| uri_decode(vm, arg(a, 0), ""));
     vm.method(g, "decodeURI", 1, |vm, _, a, _| uri_decode(vm, arg(a, 0), ";/?:@&=+$,#"));
+    crate::builtins::number::link_globals(vm);
 }
 
 fn trim_start_units(u: &[u16]) -> &[u16] {

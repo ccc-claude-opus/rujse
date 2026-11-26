@@ -78,3 +78,7 @@ pub fn binary(vm: &mut Vm, op: BinaryOp, a: Value, b: Value) -> JsResult<Value> 
     }
     Ok(super::bigint::alloc(vm, BigInt { neg, mag }))
 }
+
+pub fn to_f64(b: &BigInt) -> f64 {
+    to_i128(b) as f64
+}

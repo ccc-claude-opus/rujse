@@ -51,9 +51,16 @@ impl Vm {
         self.bigints.sweep(|_, _| {});
         self.envs.sweep(|_, _| {});
         let _ = (freed_objects, freed_strings);
-        let live = self.objects.len() * 96 + self.strings.len() * 48 + self.envs.len() * 64;
+        let live = self.heap_estimate();
         self.alloc_bytes = 0;
-        self.gc_threshold = (live * 2).max(8 << 20);
+        self.gc_threshold = (live * 2).max(8 << 20).min(self.limits.max_heap_bytes / 2 + 1);
+    }
+
+    /// Approximate live heap size in bytes.
+    pub fn heap_estimate(&self) -> usize {
+        let strings: usize = self.strings.iter().map(|(_, s)| 32 + s.len() * if s.is_latin1() { 1 } else { 2 }).sum();
+        let objects: usize = self.objects.iter().map(|(_, o)| 96 + o.elements.capacity() * 8).sum();
+        objects + strings + self.envs.len() * 64 + self.stack.len() * 8
     }
 
     fn is_value_marked(&self, v: Value) -> bool {
@@ -113,6 +120,8 @@ impl Vm {
         }
         m.values.push(self.current_native);
         m.values.extend_from_slice(&self.kept_alive);
+        m.values.extend(self.raw_json.iter().map(|o| Value::object(*o)));
+        m.values.extend(self.join_stack.iter().map(|o| Value::object(*o)));
         self.modules.trace(&mut m.values);
         crate::debug::trace_roots(self, &mut m.values);
         // Atoms are permanent; so are the symbols used as shape keys.

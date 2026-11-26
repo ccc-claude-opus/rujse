@@ -52,3 +52,15 @@ pub fn ta_delete(_vm: &mut Vm, _o: ObjId, _k: Key) -> Option<bool> { None }
 pub fn ta_own_keys(vm: &mut Vm, o: ObjId) -> Vec<Key> { vm.raw_own_keys(o) }
 pub fn ta_can_prevent_extensions(_vm: &mut Vm, _o: ObjId) -> bool { true }
 pub fn ta_length_checked(_vm: &mut Vm, _o: ObjId) -> JsResult<usize> { Ok(0) }
+
+/// DetachArrayBuffer (for $262.detachArrayBuffer).
+pub fn detach(vm: &mut Vm, v: Value) -> JsResult<()> {
+    match v.as_object().map(|o| &mut vm.obj_mut(o).class) {
+        Some(crate::object::Class::ArrayBuffer(b)) => {
+            b.data = Vec::new();
+            b.detached = true;
+            Ok(())
+        }
+        _ => Err(vm.type_error("not an ArrayBuffer")),
+    }
+}

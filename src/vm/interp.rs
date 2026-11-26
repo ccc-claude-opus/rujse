@@ -1357,6 +1357,9 @@ impl Vm {
         }
         if self.alloc_bytes > self.gc_threshold {
             self.collect_garbage();
+            if self.heap_estimate() > self.limits.max_heap_bytes {
+                return Err(self.range_error("Out of memory: the heap limit was reached"));
+            }
         }
         Ok(())
     }
@@ -1817,7 +1820,11 @@ impl Vm {
         let callee = self.frames[fi].callee;
         let p = self.intrinsics.object_prototype;
         let mapped = map.map(|m| {
-            let env = self.frames[fi].env.unwrap();
+            let env = match self.frames[fi].env {
+                Some(e) => e,
+                // No parameters live in an environment: nothing is mapped.
+                None => self.new_env(0, Value::UNDEFINED, None),
+            };
             let mut slots = Vec::new();
             for i in 0..n {
                 let s = m.get(i).and_then(|v| v.as_int()).unwrap_or(-1);

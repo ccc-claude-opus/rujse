@@ -207,6 +207,8 @@ pub struct Vm {
     pub global_this: ObjId,
     /// Objects being joined (Array.prototype.join cycle detection).
     pub join_stack: Vec<ObjId>,
+    /// Objects made by JSON.rawJSON.
+    pub raw_json: Vec<ObjId>,
 }
 
 impl Vm {
@@ -253,6 +255,7 @@ impl Vm {
             gen_signal: interp::GenSignal::None,
             global_this: ObjId(0),
             join_stack: Vec::new(),
+            raw_json: Vec::new(),
         });
         vm.shapes.push(Shape { parent: None, key: None, attrs: 0, len: 0, transitions: Vec::new(), table: None });
         realm::init(&mut vm);

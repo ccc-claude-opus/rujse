@@ -1747,7 +1747,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         for f in &fns {
             let n = f.name.clone().unwrap();
             let cap = dynamic || region.captured.contains(&n);
-            self.declare(n, BKind::Var, cap, false, 0);
+            self.declare(n, BKind::Let, cap, false, 0);
         }
         self.open_env();
         for (n, _) in &names {
@@ -2144,7 +2144,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         for f in &fns {
             let n = f.name.clone().unwrap();
             let cap = dynamic || region.captured.contains(&n);
-            self.declare(n, BKind::Var, cap, false, 0);
+            self.declare(n, BKind::Let, cap, false, 0);
         }
         self.open_env();
         for (n, _) in &names {

@@ -43,7 +43,7 @@ fn parse_args() -> Opts {
             .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("src/test262")),
         parse_only: false,
         filters: Vec::new(),
-        jobs: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+        jobs: 4,
         check: None,
         write: None,
         failures: None,
@@ -137,7 +137,7 @@ fn main() {
     let results: Mutex<Vec<(String, Outcome, String)>> = Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..o.jobs {
-            s.spawn(|| loop {
+            std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(s, || loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(path) = files.get(i) else { break };
                 let rel = path.strip_prefix(&test_dir).unwrap().to_string_lossy().into_owned();
@@ -163,7 +163,7 @@ fn main() {
                     }
                 };
                 results.lock().unwrap().push((rel, outcome, msg));
-            });
+            }).expect("spawn test thread");
         }
     });
     let mut results = results.into_inner().unwrap();
@@ -171,9 +171,144 @@ fn main() {
     report(&o, &results);
 }
 
+fn harness(o: &Opts, name: &str) -> String {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let c = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(s) = c.lock().unwrap().get(name) {
+        return s.clone();
+    }
+    let s = std::fs::read_to_string(o.root.join("harness").join(name)).unwrap_or_default();
+    c.lock().unwrap().insert(name.to_string(), s.clone());
+    s
+}
+
+fn install_host(vm: &mut rujse::Vm, out: std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+    use rujse::Value;
+    struct H(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+    impl rujse::Host for H {
+        fn print(&mut self, t: &str) {
+            self.0.borrow_mut().push(t.to_string());
+        }
+    }
+    vm.host = Some(Box::new(H(out)));
+    let print = vm.native_fn("print", 1, |vm, _, a, _| {
+        let v = a.first().copied().unwrap_or(Value::UNDEFINED);
+        let s = vm.to_string(v)?;
+        let t = vm.str(s).to_rust_lossy();
+        if let Some(h) = vm.host.as_mut() {
+            h.print(&t);
+        }
+        Ok(Value::UNDEFINED)
+    });
+    vm.global_prop("print", Value::object(print));
+    let d = vm.new_object();
+    vm.global_prop("$262", Value::object(d));
+    let g = vm.global;
+    vm.prop(d, "global", Value::object(g), 7);
+    vm.method(d, "evalScript", 1, |vm, _, a, _| {
+        let v = a.first().copied().unwrap_or(Value::UNDEFINED);
+        let s = vm.to_string(v)?;
+        let src = vm.str(s).to_rust_lossy();
+        vm.eval_script(&src, "evalScript")
+    });
+    vm.method(d, "gc", 0, |vm, _, _, _| {
+        vm.collect_garbage();
+        Ok(Value::UNDEFINED)
+    });
+    vm.method(d, "detachArrayBuffer", 1, |vm, _, a, _| {
+        let v = a.first().copied().unwrap_or(Value::UNDEFINED);
+        rujse::builtins::buffer::detach(vm, v)?;
+        Ok(Value::NULL)
+    });
+    vm.method(d, "createRealm", 0, |vm, _, _, _| Err(vm.type_error("createRealm is not supported")));
+}
+
+/// Name of the error constructor of a thrown value.
+fn error_name(vm: &mut rujse::Vm, e: rujse::Value) -> String {
+    let Some(o) = e.as_object() else { return vm.display(e) };
+    let kc = vm.key("constructor");
+    let c = match vm.get(o, kc) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let Some(co) = c.as_object() else { return String::new() };
+    let kn = vm.key("name");
+    match vm.get(co, kn) {
+        Ok(n) => vm.display(n),
+        Err(_) => String::new(),
+    }
+}
+
+fn run_once(o: &Opts, src: &str, meta: &Meta, strict: bool) -> Result<(), String> {
+    let mut code = String::new();
+    if strict {
+        code.push_str("'use strict';\n");
+    }
+    if !meta.flags.raw {
+        code.push_str(&harness(o, "assert.js"));
+        code.push('\n');
+        code.push_str(&harness(o, "sta.js"));
+        code.push('\n');
+        if meta.flags.is_async {
+            code.push_str(&harness(o, "doneprintHandle.js"));
+            code.push('\n');
+        }
+        for inc in &meta.includes {
+            code.push_str(&harness(o, inc));
+            code.push('\n');
+        }
+    }
+    code.push_str(src);
+    let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut vm = rujse::Vm::new();
+    vm.limits.max_heap_bytes = 256 << 20;
+    vm.budget = Some(400_000_000);
+    install_host(&mut vm, out.clone());
+    let r = vm.eval_script(&code, "test.js").and_then(|_| vm.run_jobs());
+    let negative = meta.negative.as_ref();
+    match r {
+        Ok(()) => {
+            if let Some(n) = negative {
+                return Err(format!("expected {} ({}), completed normally", n.kind, n.phase));
+            }
+            if meta.flags.is_async {
+                let lines = out.borrow();
+                if lines.iter().any(|l| l == "Test262:AsyncTestComplete") {
+                    return Ok(());
+                }
+                return Err(format!("async test did not complete: {}", lines.join(" | ")));
+            }
+            Ok(())
+        }
+        Err(rujse::Throw::Terminate) => Err("timeout (budget exhausted)".into()),
+        Err(rujse::Throw::Value(e)) => {
+            let name = error_name(&mut vm, e);
+            if let Some(n) = negative {
+                if name == n.kind {
+                    return Ok(());
+                }
+                return Err(format!("expected {}, got {}", n.kind, vm.error_to_string(e)));
+            }
+            Err(format!("threw {}", vm.error_to_string(e).lines().next().unwrap_or("")))
+        }
+    }
+}
+
 fn runner_full(o: &Opts, path: &Path, src: &str, meta: &Meta) -> Result<(), String> {
-    let _ = (o, path, src, meta);
-    Err("execution not implemented".into())
+    let _ = path;
+    if meta.flags.module {
+        return Err("modules not supported yet".into());
+    }
+    if meta.flags.only_strict {
+        return run_once(o, src, meta, true);
+    }
+    if meta.flags.no_strict || meta.flags.raw {
+        return run_once(o, src, meta, false);
+    }
+    run_once(o, src, meta, false)?;
+    run_once(o, src, meta, true)
 }
 
 fn report(o: &Opts, results: &[(String, Outcome, String)]) {
