@@ -12,6 +12,7 @@ pub mod date;
 pub mod error;
 pub mod function;
 pub mod generator;
+pub mod iterator_helpers;
 pub mod iterators;
 pub mod json;
 pub mod math;
@@ -32,6 +33,7 @@ pub fn init(vm: &mut Vm) {
     error::init_symbol(vm);
     error::init_boolean(vm);
     iterators::init(vm);
+    iterator_helpers::init(vm);
     array::init(vm);
     string::init(vm);
     number::init(vm);

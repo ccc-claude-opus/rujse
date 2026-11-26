@@ -95,6 +95,11 @@ const UNSUPPORTED_FEATURES: &[&str] = &[
     "ShadowRealm",
     "import-text",
     "Temporal",
+    // Proposals not in ES2026.
+    "joint-iteration",
+    "iterator-includes",
+    "iterator-chunking",
+    "Iterator.prototype.join",
     "import-bytes",
 ];
 
