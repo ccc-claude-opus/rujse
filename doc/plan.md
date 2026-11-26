@@ -272,7 +272,7 @@ rujse/
 * **rujse：MIT**（repo 已有的 `LICENSE`）。
 * **核心 crate 零執行期依賴**：regex、數字格式化、Unicode 表格自己做，`js.wasm` 才能小。
 * 開發工具可以有依賴（例如 `tools/wasmbench` 用 wasmtime，Apache-2.0 WITH LLVM-exception，和 rubrowser 同一套），`tools/licenses.sh` 列出所有授權寫進 `doc/licenses.md`。
-* **外部資料**（都會先徵求你同意，屆時說明檔案、來源與大小）：
+* **外部資料**（已同意直接下載與安裝；每項的來源、版本與授權記在 `doc/licenses.md`）：
   * test262（BSD-3-Clause）：放在 `.gitignore` 的資料夾，只提交 commit hash 與已知失敗清單。
   * Unicode Character Database（Unicode License v3）：只提交產生的表格與授權聲明。
   * V8 Benchmark Suite v7（BSD-3-Clause）。
@@ -309,4 +309,4 @@ rujse/
 7. **中斷的語意**：建議預算用完時**整個 JS 堆疊直接展開、不執行 `finally`**（同瀏覽器停止腳本），runtime 保持可用。
 8. **rubrowser 的切換時機**：建議 M4 起**並存**，M7（test262 ≥ 97% 且達 M5 效能）之後再請你決定是否改成預設。
 9. **rucloud**：建議 **1.0 不碰**。
-10. **下載**：M0 需要 test262 與 `boa_cli`（量 boa 基準）；M0／M2 需要 V8 benchmark v7、QuickJS；M3 需要 UCD；M10 需要 CLDR。每次都會先問你並說明大小。
+10. **下載**：已決定，需要時直接下載與安裝。M0 需要 test262 與 `boa_cli`（量 boa 基準）；M0／M2 需要 V8 benchmark v7、QuickJS；M3 需要 UCD；M10 需要 CLDR。
