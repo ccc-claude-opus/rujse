@@ -78,7 +78,7 @@ pub struct Reader<'a> {
     pub pos: usize,
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
     pub fn u8(&mut self) -> Option<u8> {
         let b = *self.data.get(self.pos)?;
         self.pos += 1;
@@ -113,7 +113,7 @@ impl Reader<'_> {
     pub fn bin_kind(&mut self) -> Option<crate::bytecode::BinKind> {
         bin_kind_from_u8(self.u8()?)
     }
-    pub fn bytes(&mut self) -> Option<&[u8]> {
+    pub fn bytes(&mut self) -> Option<&'a [u8]> {
         let n = self.u32()? as usize;
         let b = self.data.get(self.pos..self.pos.checked_add(n)?)?;
         self.pos += n;
@@ -550,6 +550,21 @@ impl Vm {
         }
         w.out.extend_from_slice(&e.w.out);
         Ok(w.out)
+    }
+
+    /// The source text stored in an entry (for an embedder to check that
+    /// the entry matches its current script without hashing it).
+    pub fn cache_source(bytes: &[u8]) -> Option<&str> {
+        if !bytes.starts_with(MAGIC) {
+            return None;
+        }
+        let mut r = Reader { data: bytes, pos: 4 };
+        if r.u32()? != VERSION {
+            return None;
+        }
+        let _hash = r.u32()?;
+        let _name = r.bytes()?;
+        core::str::from_utf8(r.bytes()?).ok()
     }
 
     /// The entry was made from exactly this source text.

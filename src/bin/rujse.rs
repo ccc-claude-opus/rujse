@@ -92,10 +92,11 @@ fn main() {
             }
         }
         "--cache-out" => {
-            // rujse --cache-out OUT.rjbc SCRIPT.js: write a bytecode cache entry.
-            let out = args.get(1).expect("--cache-out OUT SCRIPT");
-            let name = args.get(2).expect("--cache-out OUT SCRIPT");
+            // rujse --cache-out OUT.rjbc SCRIPT.js [NAME]: write a bytecode
+            // cache entry (NAME: the script's name in stack traces).
+            let out = args.get(1).expect("--cache-out OUT SCRIPT [NAME]");
             let src = read(2);
+            let name = args.get(3).or(args.get(2)).expect("--cache-out OUT SCRIPT [NAME]");
             let mut vm = rujse::Vm::new();
             match vm.compile_to_cache(&src, name) {
                 Ok(bytes) => std::fs::write(out, bytes).unwrap_or_else(|e| panic!("{out}: {e}")),
