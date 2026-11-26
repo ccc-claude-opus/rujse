@@ -43,8 +43,50 @@ fn main() {
                 Err(e) => println!("SyntaxError {}:{} {}", e.line, e.col, e.message),
             }
         }
-        _ => {
+        "" | "--version" => {
             println!("rujse {}", rujse::version());
         }
+        _ => {
+            let (src, name) = if mode == "-e" { (read(0), String::from("<eval>")) } else { (read(0), args[0].clone()) };
+            let mut vm = rujse::Vm::new();
+            vm.host = Some(Box::new(CliHost));
+            install_print(&mut vm);
+            let r = vm.eval_script(&src, &name).and_then(|_| vm.run_jobs());
+            if let Err(rujse::Throw::Value(e)) = r {
+                let s = vm.error_to_string(e);
+                eprintln!("Uncaught {s}");
+                std::process::exit(1);
+            }
+        }
     }
+}
+
+struct CliHost;
+
+impl rujse::Host for CliHost {
+    fn now(&mut self) -> f64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+    }
+    fn uncaught_error(&mut self, text: &str) {
+        eprintln!("Uncaught {text}");
+    }
+    fn print(&mut self, text: &str) {
+        println!("{text}");
+    }
+}
+
+fn install_print(vm: &mut rujse::Vm) {
+    let f = vm.native_fn("print", 1, |vm, _this, args, _nt| {
+        let mut out = String::new();
+        for (i, &a) in args.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            let s = vm.to_string(a)?;
+            out.push_str(&vm.str(s).to_rust_lossy());
+        }
+        println!("{out}");
+        Ok(rujse::Value::UNDEFINED)
+    });
+    vm.global_prop("print", rujse::Value::object(f));
 }
