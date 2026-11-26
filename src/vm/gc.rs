@@ -63,11 +63,28 @@ impl Vm {
             .strings
             .iter()
             .map(|(_, s)| match s.unflattened() {
-                Some(_) => 48,
-                None => 32 + s.len() * if s.is_latin1() { 1 } else { 2 },
+                Some(_) => 64,
+                // Atoms also have an entry in the atom table.
+                None => 48 + if s.atom { 48 } else { 0 } + s.len() * if s.is_latin1() { 1 } else { 2 },
             })
             .sum();
-        let objects: usize = self.objects.iter().map(|(_, o)| 96 + o.elements.capacity() * 8).sum();
+        let objects: usize = self
+            .objects
+            .iter()
+            .map(|(_, o)| {
+                // Rough sizes of the Rust structures (allocator overhead
+                // and B-tree nodes included).
+                let props = match &o.props {
+                    Props::Shaped { slots, .. } => slots.capacity() * 8,
+                    Props::Dict(d) => d.entries.capacity() * 24 + d.len() * 48,
+                };
+                let internal = match &o.class {
+                    Class::Map(m) | Class::Set(m) => m.entries.capacity() * 16 + m.live * 64,
+                    _ => 0,
+                };
+                128 + o.elements.capacity() * 8 + props + internal
+            })
+            .sum();
         objects + strings + self.envs.len() * 64 + self.stack.len() * 8
     }
 

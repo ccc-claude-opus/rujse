@@ -527,36 +527,40 @@ impl Vm {
             return Ok(Value::number(a.num() + b.num()));
         }
         if let (Some(x), Some(y)) = (a.as_string(), b.as_string()) {
-            return Ok(self.concat(x, y));
+            return self.concat(x, y);
         }
         let pa = self.to_primitive(a, Hint::Default)?;
         let pb = self.to_primitive(b, Hint::Default)?;
         if pa.is_string() || pb.is_string() {
             let x = self.to_string(pa)?;
             let y = self.to_string(pb)?;
-            return Ok(self.concat(x, y));
+            return self.concat(x, y);
         }
         let na = self.to_numeric(pa)?;
         let nb = self.to_numeric(pb)?;
         self.numeric_op(crate::ast::BinaryOp::Add, na, nb)
     }
 
-    pub fn concat(&mut self, x: StrId, y: StrId) -> Value {
+    /// `x + y` for strings (a RangeError past the maximum length).
+    pub fn concat(&mut self, x: StrId, y: StrId) -> JsResult<Value> {
         // Lengths without flattening: `s += x` must not copy `s`.
         let (a, b) = (self.strings.get(x.0), self.strings.get(y.0));
         if a.is_empty() {
-            return Value::str(y);
+            return Ok(Value::str(y));
         }
         if b.is_empty() {
-            return Value::str(x);
+            return Ok(Value::str(x));
         }
         let len = a.len() + b.len();
+        if len > crate::string::MAX_LEN {
+            return Err(self.range_error("Invalid string length"));
+        }
         if len >= crate::string::ROPE_MIN {
             let latin1 = a.is_latin1() && b.is_latin1();
-            return Value::str(self.alloc_string(crate::string::JsStr::rope(x, y, len, latin1)));
+            return Ok(Value::str(self.alloc_string(crate::string::JsStr::rope(x, y, len, latin1))));
         }
         let s = self.str(x).concat(self.str(y));
-        Value::str(self.alloc_string(s))
+        Ok(Value::str(self.alloc_string(s)))
     }
 
     /// Arithmetic on two numeric values (both Numbers or both BigInts).

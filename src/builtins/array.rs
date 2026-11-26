@@ -101,9 +101,12 @@ fn push(vm: &mut Vm, this: Value, a: &[Value], _: Value) -> JsResult<Value> {
     if let Some(o) = this.as_object() {
         let ob = vm.obj_mut(o);
         if ob.is_array() && ob.elements.len() == ob.length as usize && ob.extensible && !ob.length_readonly && !ob.sparse && ob.frozen_elements == 0 && (ob.length as usize + a.len()) < u32::MAX as usize {
+            let cap = ob.elements.capacity();
             ob.elements.extend_from_slice(a);
             ob.length += a.len() as u32;
-            return Ok(Value::from_u32(ob.length));
+            let (len, grown) = (ob.length, ob.elements.capacity() - cap);
+            vm.alloc_bytes += grown * 8;
+            return Ok(Value::from_u32(len));
         }
     }
     let o = vm.to_object(this)?;

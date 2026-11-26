@@ -34,6 +34,9 @@ pub struct Rope {
     pub flat: OnceCell<StrData>,
 }
 
+/// The longest string (code units); longer ones are a RangeError.
+pub const MAX_LEN: usize = 1 << 29;
+
 /// Concatenations at least this long become ropes.
 pub const ROPE_MIN: usize = 32;
 

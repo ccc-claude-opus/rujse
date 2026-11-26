@@ -163,7 +163,12 @@ fn table_ref(vm: &Vm, o: ObjId) -> &OrderedMap {
 /// Map.prototype.set semantics on a Map object.
 pub fn map_set(vm: &mut Vm, m: ObjId, k: Value, v: Value) {
     let mut t = core::mem::take(table(vm, m));
+    let before = t.live;
     t.insert(vm, k, v);
+    if t.live > before {
+        // An entry and its index node (see heap_estimate).
+        vm.alloc_bytes += 80;
+    }
     *table(vm, m) = t;
 }
 

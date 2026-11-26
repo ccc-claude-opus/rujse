@@ -9,7 +9,7 @@ use crate::value::{StrId, Value};
 use crate::vm::conv::is_js_space;
 use crate::vm::{JsResult, Vm};
 
-const MAX_LEN: usize = 1 << 29;
+use crate::string::MAX_LEN;
 
 pub fn init(vm: &mut Vm) {
     let op = vm.intrinsics.object_prototype;
@@ -216,7 +216,12 @@ pub fn init(vm: &mut Vm) {
         if u.len() as f64 * n > MAX_LEN as f64 {
             return Err(vm.range_error("Invalid string length"));
         }
-        let out: Vec<u16> = u.iter().copied().cycle().take(u.len() * n as usize).collect();
+        let total = u.len() * n as usize;
+        if u.iter().all(|&c| c < 0x100) {
+            let b: Vec<u8> = u.iter().map(|&c| c as u8).cycle().take(total).collect();
+            return Ok(Value::str(vm.alloc_string(crate::string::JsStr::latin1(b.into_boxed_slice()))));
+        }
+        let out: Vec<u16> = u.iter().copied().cycle().take(total).collect();
         Ok(vm.new_string_units(&out))
     });
     m!("slice", 2, |vm, this, a, _| {

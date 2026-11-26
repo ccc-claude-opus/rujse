@@ -145,7 +145,16 @@ impl Vm {
             let dense_ok = a == ea && ob.frozen_elements == 0 || (a == ea && i < ob.elements.len());
             if dense_ok && (i < ob.elements.len() || i <= ob.elements.len() + 64 || i < ob.elements.len() * 2) && i < (1 << 26) {
                 if i >= ob.elements.len() {
+                    let cap = ob.elements.capacity();
                     ob.elements.resize(i + 1, Value::HOLE);
+                    let grown = ob.elements.capacity() - cap;
+                    self.alloc_bytes += grown * 8;
+                    let ob = self.obj_mut(o);
+                    ob.elements[i] = v;
+                    if ob.sparse {
+                        self.raw_remove_prop(o, k);
+                    }
+                    return;
                 }
                 ob.elements[i] = v;
                 if ob.sparse {
@@ -365,6 +374,7 @@ impl Vm {
     // ----- [[DefineOwnProperty]] ---------------------------------------
 
     pub fn define_own_property(&mut self, o: ObjId, k: Key, d: PropDesc) -> JsResult<bool> {
+        self.check_allocation()?;
         match &self.obj(o).class {
             Class::Proxy { .. } => return crate::builtins::proxy::define_own_property(self, o, k, d),
             Class::TypedArray(_) => {
@@ -724,6 +734,7 @@ impl Vm {
 
     /// [[Set]] (OrdinarySet with a receiver).
     pub fn set_with(&mut self, o: ObjId, k: Key, v: Value, receiver: Value) -> JsResult<bool> {
+        self.check_allocation()?;
         // Fast path: own writable data property on an ordinary receiver.
         if receiver == Value::object(o) {
             if let Class::Ordinary | Class::Function(_) | Class::Error = self.obj(o).class {
@@ -763,8 +774,11 @@ impl Vm {
                         // no indexed properties.
                         if i == ob.elements.len() && i as u32 == ob.length && ob.extensible && !ob.length_readonly && !ob.sparse && self.protos_have_no_elements(o) {
                             let ob = self.obj_mut(o);
+                            let cap = ob.elements.capacity();
                             ob.elements.push(v);
                             ob.length += 1;
+                            let grown = ob.elements.capacity() - cap;
+                            self.alloc_bytes += grown * 8;
                             return Ok(true);
                         }
                     }
@@ -826,6 +840,18 @@ impl Vm {
             cur = ob.proto;
         }
         true
+    }
+
+    /// Stops a single native call (filling a huge array, say) from going
+    /// far past the heap limit between two safepoints: more than the whole
+    /// limit allocated since the last collection is a RangeError. (No
+    /// collection here: natives hold unrooted values.)
+    #[inline]
+    pub fn check_allocation(&mut self) -> JsResult<()> {
+        if self.alloc_bytes > self.limits.max_heap_bytes {
+            return Err(self.range_error("Out of memory: the heap limit was reached"));
+        }
+        Ok(())
     }
 
     pub fn set(&mut self, o: ObjId, k: Key, v: Value) -> JsResult<bool> {
