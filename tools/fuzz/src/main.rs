@@ -150,6 +150,11 @@ fn run(src: &str) -> Result<(), String> {
     if r.is_ok() && peak > MEMORY_LIMIT {
         return Err(format!("memory: peak {} MB", peak >> 20));
     }
+    // Everything a run allocates is freed with its VM.
+    let kept = LIVE.load(Relaxed).saturating_sub(base);
+    if r.is_ok() && kept > 1 << 20 {
+        return Err(format!("memory: leaked {} KB", kept >> 10));
+    }
     r
 }
 
@@ -232,12 +237,15 @@ fn main() {
         }
         let m = mutate(&mut rng, &src, &corpus);
         runs += 1;
+        if runs % 50_000 == 0 {
+            println!("{runs} runs, live {} MB", LIVE.load(Relaxed) >> 20);
+        }
         // The input being run, for when the process dies (out of memory).
         let _ = std::fs::write("target/fuzz-current.js", &m);
         if let Err(msg) = run(&m) {
             crashes += 1;
             // One file per distinct message.
-            let key: String = if msg.starts_with("memory:") { format!("memory {runs}") } else { msg.chars().take(120).collect() };
+            let key: String = if msg.starts_with("memory: peak") { format!("memory {runs}") } else { msg.chars().take(120).collect() };
             if !seen.contains(&key) {
                 seen.push(key);
                 let _ = std::fs::create_dir_all(&out);

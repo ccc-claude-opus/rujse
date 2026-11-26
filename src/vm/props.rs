@@ -374,7 +374,7 @@ impl Vm {
     // ----- [[DefineOwnProperty]] ---------------------------------------
 
     pub fn define_own_property(&mut self, o: ObjId, k: Key, d: PropDesc) -> JsResult<bool> {
-        self.check_allocation()?;
+        self.poll_limits()?;
         match &self.obj(o).class {
             Class::Proxy { .. } => return crate::builtins::proxy::define_own_property(self, o, k, d),
             Class::TypedArray(_) => {
@@ -598,6 +598,7 @@ impl Vm {
     // ----- [[HasProperty]] / [[Get]] / [[Set]] / [[Delete]] -------------
 
     pub fn has_property(&mut self, o: ObjId, k: Key) -> JsResult<bool> {
+        self.poll_limits()?;
         let mut cur = o;
         loop {
             match &self.obj(cur).class {
@@ -626,6 +627,7 @@ impl Vm {
 
     /// [[Get]] with a receiver.
     pub fn get_with(&mut self, o: ObjId, k: Key, receiver: Value) -> JsResult<Value> {
+        self.poll_limits()?;
         let mut cur = o;
         loop {
             // Fast path: plain storage hit.
@@ -734,7 +736,7 @@ impl Vm {
 
     /// [[Set]] (OrdinarySet with a receiver).
     pub fn set_with(&mut self, o: ObjId, k: Key, v: Value, receiver: Value) -> JsResult<bool> {
-        self.check_allocation()?;
+        self.poll_limits()?;
         // Fast path: own writable data property on an ordinary receiver.
         if receiver == Value::object(o) {
             if let Class::Ordinary | Class::Function(_) | Class::Error = self.obj(o).class {

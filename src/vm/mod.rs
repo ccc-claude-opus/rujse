@@ -401,6 +401,8 @@ impl Vm {
         }
         self.strings.get_mut(id.0).atom = true;
         self.atoms.entry(h).or_default().push(id);
+        // The atom table entry (atoms are never collected).
+        self.alloc_bytes += 64;
         id
     }
 
@@ -418,6 +420,8 @@ impl Vm {
         js.atom = true;
         let id = StrId(self.strings.alloc(js));
         self.atoms.entry(h).or_default().push(id);
+        // The atom table entry (atoms are never collected).
+        self.alloc_bytes += 64;
         id
     }
 
@@ -435,6 +439,8 @@ impl Vm {
         js.atom = true;
         let id = StrId(self.strings.alloc(js));
         self.atoms.entry(h).or_default().push(id);
+        // The atom table entry (atoms are never collected).
+        self.alloc_bytes += 64;
         id
     }
 
