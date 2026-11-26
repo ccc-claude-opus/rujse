@@ -68,6 +68,21 @@ fn main() {
             let r = vm.run_code(code, None, this, rujse::Value::UNDEFINED, rujse::Value::UNDEFINED);
             let t4 = std::time::Instant::now();
             println!("parse {:?} vm {:?} compile {:?} run {:?} ok={}", t1 - t0, t2 - t1, t3 - t2, t4 - t3, r.is_ok());
+            // The same through the bytecode cache.
+            let bytes = rujse::Vm::new().compile_to_cache(&src, "x").expect("cache");
+            // RUJSE_LOAD_LOOP=n: load n times (for profiling).
+            let n: usize = std::env::var("RUJSE_LOAD_LOOP").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+            for _ in 0..n {
+                let mut vm = rujse::Vm::new();
+                vm.load_cached(&bytes).expect("load");
+            }
+            let mut vm = rujse::Vm::new();
+            let t5 = std::time::Instant::now();
+            let code = vm.load_cached(&bytes).expect("load");
+            let t6 = std::time::Instant::now();
+            let r = vm.run_script_code(code);
+            let t7 = std::time::Instant::now();
+            println!("cache {} bytes: load {:?} run {:?} ok={}", bytes.len(), t6 - t5, t7 - t6, r.is_ok());
         }
         "--ast" => {
             let src = read(1);
@@ -76,8 +91,34 @@ fn main() {
                 Err(e) => println!("SyntaxError {}:{} {}", e.line, e.col, e.message),
             }
         }
+        "--cache-out" => {
+            // rujse --cache-out OUT.rjbc SCRIPT.js: write a bytecode cache entry.
+            let out = args.get(1).expect("--cache-out OUT SCRIPT");
+            let name = args.get(2).expect("--cache-out OUT SCRIPT");
+            let src = read(2);
+            let mut vm = rujse::Vm::new();
+            match vm.compile_to_cache(&src, name) {
+                Ok(bytes) => std::fs::write(out, bytes).unwrap_or_else(|e| panic!("{out}: {e}")),
+                Err(rujse::Throw::Value(e)) => {
+                    eprintln!("{}", vm.error_to_string(e));
+                    std::process::exit(1);
+                }
+                Err(_) => std::process::exit(1),
+            }
+        }
         "" | "--version" => {
             println!("rujse {}", rujse::version());
+        }
+        _ if mode.ends_with(".rjbc") => {
+            // A bytecode cache entry.
+            let bytes = std::fs::read(mode).unwrap_or_else(|e| panic!("{mode}: {e}"));
+            let mut vm = rujse::Vm::new();
+            vm.host = Some(Box::new(CliHost));
+            install_print(&mut vm);
+            if let Err(rujse::Throw::Value(e)) = vm.eval_cached(&bytes).and_then(|_| vm.run_jobs()) {
+                eprintln!("Uncaught {}", vm.error_to_string(e));
+                std::process::exit(1);
+            }
         }
         _ => {
             let (src, name) = if mode == "-e" { (read(0), String::from("<eval>")) } else { (read(0), args[0].clone()) };

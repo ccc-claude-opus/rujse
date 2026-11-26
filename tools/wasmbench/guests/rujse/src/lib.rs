@@ -48,8 +48,18 @@ pub extern "C" fn bench_init() {
 /// Runs a script; 0 = completed, 1 = threw (the error is printed).
 #[unsafe(no_mangle)]
 pub extern "C" fn bench_eval(ptr: *const u8, len: usize) -> i32 {
-    let src = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let src = String::from_utf8_lossy(src).into_owned();
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    if bytes.starts_with(b"RJBC") {
+        return VM.with(|v| {
+            let mut b = v.borrow_mut();
+            let vm = b.as_mut().expect("bench_init first");
+            match vm.eval_cached(bytes).and_then(|_| vm.run_jobs()) {
+                Ok(_) => 0,
+                Err(_) => 1,
+            }
+        });
+    }
+    let src = String::from_utf8_lossy(bytes).into_owned();
     VM.with(|v| {
         let mut b = v.borrow_mut();
         let vm = b.as_mut().expect("bench_init first");

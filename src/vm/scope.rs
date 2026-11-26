@@ -490,6 +490,12 @@ impl Vm {
 
     /// Parses and runs a script in the global scope.
     pub fn eval_script(&mut self, src: &str, name: &str) -> JsResult<Value> {
+        let code = self.compile_script(src, name)?;
+        self.run_script_code(code)
+    }
+
+    /// Parses and compiles a script (a SyntaxError on failure).
+    pub fn compile_script(&mut self, src: &str, name: &str) -> JsResult<Rc<crate::bytecode::Code>> {
         let prog = match crate::parser::Parser::parse_script(src, false) {
             Ok(p) => p,
             Err(e) => {
@@ -502,15 +508,16 @@ impl Vm {
             let mut c = crate::compiler::Compiler::new(self, source);
             c.script(&prog, false)
         };
-        let compiled = match compiled {
-            Ok(c) => c,
-            Err(e) => {
-                let m = alloc::format!("{} ({}:{}:{})", e.message, name, e.line, e.col);
-                return Err(self.syntax_error(&m));
-            }
-        };
+        compiled.map_err(|e| {
+            let m = alloc::format!("{} ({}:{}:{})", e.message, name, e.line, e.col);
+            self.syntax_error(&m)
+        })
+    }
+
+    /// Runs compiled script code in the global scope.
+    pub fn run_script_code(&mut self, code: Rc<crate::bytecode::Code>) -> JsResult<Value> {
         let this = Value::object(self.global_this);
-        self.run_code(compiled, None, this, Value::UNDEFINED, Value::UNDEFINED)
+        self.run_code(code, None, this, Value::UNDEFINED, Value::UNDEFINED)
     }
 
     /// Runs queued promise jobs until the queue is empty.

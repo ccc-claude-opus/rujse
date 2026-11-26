@@ -28,6 +28,9 @@ enum Outcome {
 struct Opts {
     root: PathBuf,
     parse_only: bool,
+    /// Run scripts through the bytecode cache (compile in another VM,
+    /// serialize, load).
+    cache: bool,
     filters: Vec<String>,
     jobs: usize,
     check: Option<PathBuf>,
@@ -42,6 +45,7 @@ fn parse_args() -> Opts {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("src/test262")),
         parse_only: false,
+        cache: false,
         filters: Vec::new(),
         jobs: 4,
         check: None,
@@ -54,6 +58,7 @@ fn parse_args() -> Opts {
         match a.as_str() {
             "--root" => o.root = args.next().expect("--root DIR").into(),
             "--parse-only" => o.parse_only = true,
+            "--cache" => o.cache = true,
             "--filter" => o.filters.push(args.next().expect("--filter SUBSTR")),
             "-j" => o.jobs = args.next().expect("-j N").parse().expect("-j N"),
             "--check" => o.check = Some(args.next().expect("--check FILE").into()),
@@ -306,7 +311,13 @@ fn run_once(o: &Opts, src: &str, meta: &Meta, strict: bool, path: &Path) -> Resu
             }
         })
     } else {
-        vm.eval_script(&code, &path.to_string_lossy()).and_then(|_| vm.run_jobs())
+        let name = path.to_string_lossy();
+        let cached = if o.cache { rujse::Vm::new().compile_to_cache(&code, &name).ok() } else { None };
+        match cached {
+            Some(bytes) => vm.eval_cached(&bytes),
+            None => vm.eval_script(&code, &name),
+        }
+        .and_then(|_| vm.run_jobs())
     };
     let negative = meta.negative.as_ref();
     match r {

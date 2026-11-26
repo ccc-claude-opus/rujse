@@ -50,11 +50,17 @@ impl Guest {
 
     /// Runs one script; returns (fuel, nanoseconds, ok).
     fn eval(&mut self, src: &str) -> Result<(u64, u128, bool), String> {
+        self.eval_bytes(src.as_bytes())
+    }
+
+    /// Runs a script, or (for guests that support it) a bytecode cache
+    /// entry.
+    fn eval_bytes(&mut self, src: &[u8]) -> Result<(u64, u128, bool), String> {
         let alloc = self.instance.get_typed_func::<i32, i32>(&mut self.store, "bench_alloc").map_err(|e| e.to_string())?;
         let eval = self.instance.get_typed_func::<(i32, i32), i32>(&mut self.store, "bench_eval").map_err(|e| e.to_string())?;
         let ptr = alloc.call(&mut self.store, src.len() as i32).map_err(|e| e.to_string())?;
         let mem = self.instance.get_memory(&mut self.store, "memory").ok_or("no memory export")?;
-        mem.write(&mut self.store, ptr as u32 as usize, src.as_bytes()).map_err(|e| e.to_string())?;
+        mem.write(&mut self.store, ptr as u32 as usize, src).map_err(|e| e.to_string())?;
         let before = self.store.get_fuel().unwrap();
         let t = Instant::now();
         let status = eval.call(&mut self.store, (ptr, src.len() as i32)).map_err(|e| e.to_string())?;
@@ -91,8 +97,18 @@ fn main() {
         let (_, init_fuel) = Guest::new(&engine, &module).expect("instantiate");
         rows.push(format!("{name}\t(module)\tsize={size}\tcompile_ms={compile_ms:.0}\tinit_fuel={init_fuel}"));
         for b in benches {
-            let src = std::fs::read_to_string(b).unwrap_or_else(|e| panic!("{b}: {e}"));
+            let bytes = std::fs::read(b).unwrap_or_else(|e| panic!("{b}: {e}"));
             let bname = b.rsplit('/').next().unwrap().trim_end_matches(".js");
+            // A bytecode cache entry (rujse) runs as it is.
+            if bytes.starts_with(b"RJBC") {
+                let (mut g, _) = Guest::new(&engine, &module).unwrap();
+                match g.eval_bytes(&bytes) {
+                    Ok((f, ns, ok)) => rows.push(format!("{name}\t{bname}\tfuel={f}\tms={:.1}\tok={ok}", ns as f64 / 1e6)),
+                    Err(e) => rows.push(format!("{name}\t{bname}\ttrap={e}")),
+                }
+                continue;
+            }
+            let src = String::from_utf8(bytes).unwrap_or_else(|e| panic!("{b}: {e}"));
             if let Some(n) = loop_count(&src) {
                 let (mut g1, _) = Guest::new(&engine, &module).unwrap();
                 let (f1, _, ok1) = g1.eval(&src.replace("__N__", &n.to_string())).unwrap();

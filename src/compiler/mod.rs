@@ -710,18 +710,10 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 d
             })
             .collect();
-        // Inline caches: one per constant (global names), then one per
-        // named property access site.
-        let mut nics = f.consts.len() as u32;
-        for op in f.ops.iter_mut() {
-            if let Op::GetNamed(_, _, ic) | Op::SetNamed(_, _, ic) | Op::DefineNamed(_, _, ic) = op {
-                *ic = nics;
-                nics += 1;
-            }
-        }
-        let ics = (0..nics).map(|_| Cell::new(crate::bytecode::Ic::Empty)).collect();
+        let mut ops: Vec<Cell<Op>> = f.ops.into_iter().map(Cell::new).collect();
+        let ics = assign_ics(&mut ops, f.consts.len());
         let code = Rc::new(Code {
-            ops: f.ops.into_iter().map(Cell::new).collect(),
+            ops: ops.into_boxed_slice(),
             consts: f.consts,
             children: f.children,
             handlers: f.handlers,
@@ -2818,4 +2810,21 @@ pub fn collect_annex_b_sites(body: &[Stmt], names: &[Name], out: &mut Vec<usize>
 pub fn _unused() -> Box<()> {
     let _ = vec![0u8];
     Box::new(())
+}
+
+/// Inline caches of a code unit: one per constant (global names), then
+/// one per named property access site, whose index goes into the op.
+pub fn assign_ics(ops: &mut [Cell<Op>], nconsts: usize) -> alloc::boxed::Box<[Cell<crate::bytecode::Ic>]> {
+    let mut n = nconsts as u32;
+    for c in ops.iter() {
+        let op = match c.get() {
+            Op::GetNamed(o, k, _) => Op::GetNamed(o, k, n),
+            Op::SetNamed(o, k, _) => Op::SetNamed(o, k, n),
+            Op::DefineNamed(o, k, _) => Op::DefineNamed(o, k, n),
+            _ => continue,
+        };
+        c.set(op);
+        n += 1;
+    }
+    (0..n).map(|_| Cell::new(crate::bytecode::Ic::Empty)).collect()
 }
