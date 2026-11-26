@@ -46,3 +46,24 @@ fn budget_and_recursion() {
     assert_eq!(v.as_int(), Some(2));
     assert_eq!(eval("function f(n) { return f(n + 1) } try { f(0) } catch (e) { e instanceof RangeError }"), "true");
 }
+
+#[test]
+fn zero_copy_binary_data() {
+    let mut vm = rujse::Vm::new();
+    let data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+    let ptr = data.as_ptr();
+    let buf = vm.array_buffer_from_vec(data);
+    assert_eq!(vm.array_buffer_bytes(buf).unwrap().as_ptr(), ptr, "moved in, not copied");
+    vm.global_prop("buf", buf);
+    let view = vm.eval_script("globalThis.v = new Uint16Array(buf, 2, 2); v[0] = 0x0a0b; new DataView(buf, 6)", "t.js").unwrap();
+    assert_eq!(vm.view_bytes(view).unwrap(), &[7, 8]);
+    let v = vm.eval_script("v", "t.js").unwrap();
+    assert_eq!(vm.view_bytes(v).unwrap(), &[0x0b, 0x0a, 5, 6]);
+    vm.array_buffer_bytes_mut(buf).unwrap()[0] = 9;
+    assert_eq!(vm.eval_script("new Uint8Array(buf)[0]", "t.js").unwrap(), rujse::Value::int(9));
+    let out = vm.array_buffer_take(buf).unwrap();
+    assert_eq!(out.as_ptr(), ptr, "moved out, not copied");
+    assert_eq!(vm.eval_script("buf.detached + ':' + buf.byteLength + ':' + v.length", "t.js").map(|v| vm.display(v)).unwrap(), "true:0:0");
+    let s = vm.string_from_utf8("plain ascii");
+    assert_eq!(vm.string_as_ascii(s), Some("plain ascii"));
+}

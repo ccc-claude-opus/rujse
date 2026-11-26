@@ -77,8 +77,9 @@ fn retarget(op: &mut Op, map: &[u32]) {
     };
 }
 
-/// Optimizes `ops` in place, remapping handlers and the line table.
-pub fn optimize(ops: &mut Vec<Op>, handlers: &mut [Handler], lines: &mut Vec<(u32, u32, u32)>) {
+/// Optimizes `ops` in place, remapping handlers and the line table;
+/// returns the map from old to new pcs (length `ops.len() + 1`).
+pub fn optimize(ops: &mut Vec<Op>, handlers: &mut [Handler], lines: &mut Vec<(u32, u32, u32)>) -> Vec<u32> {
     let n = ops.len();
     // Positions that must stay addressable.
     let mut keep = vec![false; n + 1];
@@ -184,4 +185,5 @@ pub fn optimize(ops: &mut Vec<Op>, handlers: &mut [Handler], lines: &mut Vec<(u3
     }
     lines.dedup_by_key(|l| l.0);
     *ops = out;
+    map
 }

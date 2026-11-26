@@ -5,6 +5,7 @@ pub mod gc;
 pub mod generator;
 pub mod interp;
 pub mod props;
+pub mod binary;
 pub mod ic;
 pub mod realm;
 pub mod scope;
@@ -172,6 +173,9 @@ pub struct Vm {
     /// Bumped whenever a global lexical binding is added (it may shadow a
     /// global object property that an inline cache points to).
     pub global_epoch: u32,
+    /// The debugger, when enabled (`enable_debugger`).
+    pub debugger: Option<alloc::boxed::Box<crate::debug::Debugger>>,
+    pub inspector: crate::inspect::Inspector,
     pub symbol_registry: BTreeMap<StrId, SymId>,
     pub stack: Vec<Value>,
     pub sp: usize,
@@ -241,6 +245,8 @@ impl Vm {
             global_lex: BTreeMap::new(),
             global_cells: Vec::new(),
             global_epoch: 0,
+            debugger: None,
+            inspector: Default::default(),
             symbol_registry: BTreeMap::new(),
             stack: Vec::new(),
             sp: 0,

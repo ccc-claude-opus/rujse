@@ -141,7 +141,7 @@ impl Vm {
             // The register named by the suspending op gets the kind.
             let pc = st.pc as usize;
             if pc > 0 {
-                if let Op::Yield(r) | Op::YieldRaw(r) | Op::AsyncGenYield(r) | Op::Await(r) = st.code.ops[pc - 1] {
+                if let Op::Yield(r) | Op::YieldRaw(r) | Op::AsyncGenYield(r) | Op::Await(r) = st.code.op_at(pc - 1) {
                     self.stack[base + r as usize] = Value::int(kind as i32);
                 }
             }
@@ -217,6 +217,6 @@ impl Vm {
     pub fn async_gen_in_await(&self, g: ObjId) -> bool {
         let st = self.gen_state(g);
         let pc = st.pc as usize;
-        pc > 0 && matches!(st.code.ops.get(pc - 1), Some(Op::Await(_)))
+        pc > 0 && matches!(st.code.op_at(pc - 1), Op::Await(_))
     }
 }

@@ -198,6 +198,9 @@ impl Vm {
             kind,
             generator: None,
         });
+        if self.debugger.is_some() {
+            self.debug_on_enter();
+        }
         // Async functions: a promise and a state object from the start.
         let f = self.frames.last().unwrap();
         if f.code.is_async && !f.code.is_generator {
@@ -262,24 +265,12 @@ impl Vm {
             let code = self.frames[fi].code.clone();
             let base = self.frames[fi].base as usize;
             let mut pc = self.frames[fi].pc as usize;
-            let ops: &[Op] = &code.ops;
+            let ops: &[core::cell::Cell<Op>] = &code.ops;
             #[allow(unused_assignments)]
             let mut error: Throw = Throw::Terminate;
             macro_rules! r {
                 ($r:expr) => {
                     self.stack[base + $r as usize]
-                };
-            }
-            macro_rules! tri {
-                ($e:expr) => {
-                    match $e {
-                        Ok(v) => v,
-                        Err(t) => {
-                            error = t;
-                            self.frames[fi].pc = pc as u32;
-                            break;
-                        }
-                    }
                 };
             }
             macro_rules! konst {
@@ -296,20 +287,43 @@ impl Vm {
                     self.key_from_str(s)
                 }};
             }
-            macro_rules! safepoint {
-                () => {
-                    self.ticks -= 1;
-                    if self.ticks <= 0 {
-                        self.frames[fi].pc = pc as u32;
-                        tri!(self.safepoint(acc));
-                    }
-                };
-            }
-            loop {
-                let op = ops[pc];
+            'ops: loop {
+                macro_rules! tri {
+                    ($e:expr) => {
+                        match $e {
+                            Ok(v) => v,
+                            Err(t) => {
+                                error = t;
+                                self.frames[fi].pc = pc as u32;
+                                break 'ops;
+                            }
+                        }
+                    };
+                }
+                macro_rules! safepoint {
+                    () => {
+                        self.ticks -= 1;
+                        if self.ticks <= 0 {
+                            self.frames[fi].pc = pc as u32;
+                            tri!(self.safepoint(acc));
+                        }
+                    };
+                }
+                let op = ops[pc].get();
                 pc += 1;
                 match op {
                     Op::Nop => {}
+                    Op::Break(i) => {
+                        pc -= 1;
+                        self.frames[fi].pc = pc as u32;
+                        tri!(self.debug_break(fi, pc, i, acc));
+                        // Run the original instruction: put it back until
+                        // the next safepoint (any way back to this pc
+                        // passes one: a backward jump or a call).
+                        let orig = code.patches.borrow()[i as usize].op;
+                        ops[pc].set(orig);
+                        self.debug_rearm(&code, pc as u32);
+                    }
                     Op::BinRR { kind, dst, lhs, rhs } => {
                         let (a, b) = (r!(lhs), r!(rhs));
                         let fast = match (a.as_int(), b.as_int()) {
@@ -981,7 +995,7 @@ impl Vm {
                             if callee == Value::object(self.intrinsics.eval) {
                                 let arg = if argc > 0 { r!(x + 2) } else { Value::UNDEFINED };
                                 acc = tri!(self.direct_eval(fi, arg, k));
-                                continue;
+                                continue 'ops;
                             }
                         }
                         let abase = base + x as usize + 2;
@@ -1054,14 +1068,14 @@ impl Vm {
                             }
                             Err(t) => {
                                 error = t;
-                                break;
+                                break 'ops;
                             }
                         }
                     }
                     Op::Throw => {
                         self.frames[fi].pc = pc as u32;
                         error = Throw::Value(acc);
-                        break;
+                        break 'ops;
                     }
                     Op::ThrowError(kind, k) => {
                         let m = self.display(konst!(k));
@@ -1107,7 +1121,7 @@ impl Vm {
                     Op::IteratorStep(x, t) => {
                         if r!(x + 2) == Value::TRUE {
                             pc = t as usize;
-                            continue;
+                            continue 'ops;
                         }
                         self.frames[fi].pc = pc as u32;
                         let (it, next) = (r!(x), r!(x + 1));
@@ -1249,6 +1263,12 @@ impl Vm {
                 }
             }
             // An exception: find a handler.
+            if let (Throw::Value(v), true) = (&error, self.debugger.is_some()) {
+                let v = *v;
+                if let Err(t) = self.debug_on_throw(v) {
+                    error = t;
+                }
+            }
             match self.unwind(error, entry) {
                 Ok(Some(v)) => {
                     // Exception caught by an async frame that ends here.
@@ -1465,6 +1485,9 @@ impl Vm {
 
     fn safepoint(&mut self, _acc: Value) -> JsResult<()> {
         self.ticks = TICKS;
+        if self.debugger.is_some() {
+            self.debug_safepoint();
+        }
         if self.interrupt.get() {
             self.interrupt.set(false);
             return Err(Throw::Terminate);

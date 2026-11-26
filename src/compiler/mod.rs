@@ -92,6 +92,8 @@ pub struct Scope {
     pub names: Vec<Value>,
     /// Register high-water mark to restore when the scope ends.
     pub reg_mark: Reg,
+    /// First pc of the scope (debug info).
+    pub start: u32,
     /// A sloppy function's var scope that direct eval may extend.
     pub dynamic: bool,
     /// The environment records slot names (eval/with lookups by name).
@@ -140,6 +142,7 @@ struct TryRegion {
 pub struct FuncState<'a> {
     ops: Vec<Op>,
     consts: Vec<Const>,
+    debug_scopes: Vec<crate::bytecode::DebugScope>,
     children: Vec<Rc<Code>>,
     lines: Vec<(u32, u32, u32)>,
     pub next_reg: Reg,
@@ -319,6 +322,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
     pub fn push_scope(&mut self, kind: ScopeKind) {
         let mark = self.fr().next_reg;
         let named = self.fr().named_envs;
+        let start = self.fr().ops.len() as u32;
         self.f().scopes.push(Scope {
             kind,
             bindings: Vec::new(),
@@ -327,8 +331,38 @@ impl<'a, 'v> Compiler<'a, 'v> {
             push_at: None,
             names: Vec::new(),
             reg_mark: mark,
+            start,
             dynamic: false,
             named,
+        });
+    }
+
+    /// Records a scope that ends here for the debugger.
+    fn record_scope(&mut self, s: &Scope) {
+        let mut regs = Vec::new();
+        let mut slots = Vec::new();
+        for b in &s.bindings {
+            if b.name.starts_with('%') || b.name.starts_with('#') || b.kind == BKind::FnName {
+                continue;
+            }
+            match b.loc {
+                Loc::Reg(r) => regs.push((b.name.clone(), r)),
+                Loc::Env(i) => slots.push((b.name.clone(), i)),
+                Loc::Import(_) => {}
+            }
+        }
+        if regs.is_empty() && slots.is_empty() {
+            return;
+        }
+        let end = self.fr().ops.len() as u32;
+        let function = matches!(s.kind, ScopeKind::Function | ScopeKind::Script);
+        self.f().debug_scopes.push(crate::bytecode::DebugScope {
+            start: s.start,
+            end,
+            env_at: s.push_at.map(|p| p as u32),
+            function,
+            regs,
+            slots,
         });
     }
 
@@ -370,9 +404,10 @@ impl<'a, 'v> Compiler<'a, 'v> {
         if s.env_slots == 0 || s.has_env {
             return;
         }
+        // Environments always carry their slot names: eval/with lookups
+        // need them, and so does the debugger.
         let names = s.names.clone();
-        let dynamic = s.dynamic || s.named;
-        let names_k = if dynamic { self.konst(Const::Names(names.into())) } else { u32::MAX };
+        let names_k = self.konst(Const::Names(names.into()));
         let n = self.fr().scopes.last().unwrap().env_slots;
         let at = self.emit(Op::PushEnv { n, names: names_k });
         let f = self.f();
@@ -385,6 +420,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
     /// Ends the innermost scope (pops its environment).
     pub fn pop_scope(&mut self) {
         let s = self.f().scopes.pop().unwrap();
+        self.record_scope(&s);
         if s.has_env {
             // Patch the slot count (bindings may have been added later).
             if let Some(at) = s.push_at {
@@ -633,6 +669,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
         FuncState {
             ops: Vec::new(),
             consts: Vec::new(),
+            debug_scopes: Vec::new(),
             children: Vec::new(),
             lines: Vec::new(),
             next_reg: 0,
@@ -656,8 +693,23 @@ impl<'a, 'v> Compiler<'a, 'v> {
     }
 
     fn finish(&mut self, name: Value, nparams: u16, length: u16, keep_args: bool, has_fields: bool, src: (u32, u32)) -> Rc<Code> {
+        // Scopes still open (the function's own) end here.
+        while let Some(sc) = self.f().scopes.pop() {
+            self.record_scope(&sc);
+        }
         let mut f = self.funcs.pop().unwrap();
-        peephole::optimize(&mut f.ops, &mut f.handlers, &mut f.lines);
+        let map = peephole::optimize(&mut f.ops, &mut f.handlers, &mut f.lines);
+        let remap = |pc: u32| map[(pc as usize).min(map.len() - 1)];
+        let scopes: Box<[crate::bytecode::DebugScope]> = f
+            .debug_scopes
+            .into_iter()
+            .map(|mut d| {
+                d.start = remap(d.start);
+                d.end = remap(d.end);
+                d.env_at = d.env_at.map(remap);
+                d
+            })
+            .collect();
         // Inline caches: one per constant (global names), then one per
         // named property access site.
         let mut nics = f.consts.len() as u32;
@@ -668,8 +720,8 @@ impl<'a, 'v> Compiler<'a, 'v> {
             }
         }
         let ics = (0..nics).map(|_| Cell::new(crate::bytecode::Ic::Empty)).collect();
-        Rc::new(Code {
-            ops: f.ops,
+        let code = Rc::new(Code {
+            ops: f.ops.into_iter().map(Cell::new).collect(),
             consts: f.consts,
             children: f.children,
             handlers: f.handlers,
@@ -689,7 +741,13 @@ impl<'a, 'v> Compiler<'a, 'v> {
             src_end: src.1,
             calls: Cell::new(0),
             ics,
-        })
+            patches: Default::default(),
+            scopes,
+        });
+        if self.funcs.is_empty() {
+            crate::debug::code_compiled(self.vm, &code);
+        }
+        code
     }
 
     /// Compiles a script (or indirect eval).
@@ -840,6 +898,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
 
     fn pop_scope_no_emit(&mut self) {
         let s = self.f().scopes.pop().unwrap();
+        self.record_scope(&s);
         if let Some(at) = s.push_at {
             let names_k = match self.fr().ops[at] {
                 Op::PushEnv { names, .. } => names,

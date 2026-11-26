@@ -15,6 +15,7 @@ pub mod bytecode;
 pub mod compiler;
 pub mod debug;
 pub mod heap;
+pub mod inspect;
 pub mod lexer;
 #[cfg(not(feature = "std"))]
 pub mod libm;

@@ -36,6 +36,8 @@ pub enum BinKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
     Nop,
+    /// A debugger patch (breakpoint or step location) over `patches[i]`.
+    Break(u32),
     /// dst = acc = lhs OP rhs (registers).
     BinRR { kind: BinKind, dst: Reg, lhs: Reg, rhs: Reg },
     /// acc = lhs CMP rhs; jumps if acc == when.
@@ -409,7 +411,9 @@ pub enum FuncKind {
 /// A compiled function, script, module or eval body.
 #[derive(Debug)]
 pub struct Code {
-    pub ops: Vec<Op>,
+    /// The instructions. Cells so the debugger can patch a `Break` over
+    /// an instruction (`op_at` gives the original).
+    pub ops: Box<[Cell<Op>]>,
     pub consts: Vec<Const>,
     pub children: Vec<Rc<Code>>,
     pub handlers: Vec<Handler>,
@@ -438,6 +442,38 @@ pub struct Code {
     /// (globals, named properties) cache where they found it under the
     /// index of the name's constant.
     pub ics: Box<[Cell<Ic>]>,
+    /// Debugger patches: `Op::Break(i)` stands for `patches[i]`.
+    pub patches: core::cell::RefCell<Vec<Patch>>,
+    /// Lexical scopes for the debugger: register and environment
+    /// variables and the pc range where each scope is live.
+    pub scopes: Box<[DebugScope]>,
+}
+
+/// An instruction the debugger replaced by `Op::Break`.
+#[derive(Clone, Copy, Debug)]
+pub struct Patch {
+    pub pc: u32,
+    pub op: Op,
+    /// A user breakpoint here (`Debugger` id), if any.
+    pub breakpoint: Option<u32>,
+    /// Armed for stepping.
+    pub step: bool,
+}
+
+/// A lexical scope as the debugger sees it.
+#[derive(Clone, Debug)]
+pub struct DebugScope {
+    /// Live for `start <= pc < end`.
+    pub start: u32,
+    pub end: u32,
+    /// The scope's environment is pushed at this pc (captured variables
+    /// live there from then on).
+    pub env_at: Option<u32>,
+    pub function: bool,
+    /// Variables kept in registers: (name, register).
+    pub regs: Vec<(alloc::rc::Rc<str>, u16)>,
+    /// Variables in the environment: (name, slot).
+    pub slots: Vec<(alloc::rc::Rc<str>, u16)>,
 }
 
 /// An inline cache entry. Every hit is validated against the current
@@ -473,6 +509,15 @@ pub struct Source {
 }
 
 impl Code {
+    /// The instruction at `pc` (the original one under a debugger patch).
+    #[inline]
+    pub fn op_at(&self, pc: usize) -> Op {
+        match self.ops[pc].get() {
+            Op::Break(i) => self.patches.borrow()[i as usize].op,
+            op => op,
+        }
+    }
+
     /// The source position of the instruction at `pc`.
     pub fn position(&self, pc: u32) -> (u32, u32) {
         match self.lines.binary_search_by(|&(p, _, _)| p.cmp(&pc)) {
