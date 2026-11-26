@@ -88,6 +88,11 @@ fn mul_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     out
 }
 
+/// The largest BigInt, in bits (as SpiderMonkey). Bigger results are a
+/// RangeError: the algorithms here are quadratic, and a script must not
+/// be able to stall the VM inside one operation.
+pub const MAX_BITS: u64 = 1 << 20;
+
 fn divmod_small(a: &[u32], d: u32) -> (Vec<u32>, u32) {
     let mut out = alloc::vec![0u32; a.len()];
     let mut rem = 0u64;
@@ -243,7 +248,7 @@ fn shift_left(vm: &mut Vm, a: &BigInt, n: &BigInt) -> JsResult<BigInt> {
     if n.neg {
         return Ok(shift_right(a, &neg(n)));
     }
-    if n.mag.len() > 1 || n.mag.first().is_some_and(|&x| x > (1 << 30)) {
+    if n.mag.len() > 1 || n.mag.first().is_some_and(|&x| x as u64 + bits_len(&a.mag) as u64 > MAX_BITS) {
         if a.mag.is_empty() {
             return Ok(BigInt::zero());
         }
@@ -288,7 +293,7 @@ fn pow(vm: &mut Vm, a: &BigInt, e: &BigInt) -> JsResult<BigInt> {
         let odd = e.mag[0] & 1 == 1;
         return Ok(mk(a.neg && odd, alloc::vec![1]));
     }
-    if e.mag.len() > 1 || bits_len(&a.mag) as u64 * e.mag[0] as u64 > (1 << 30) {
+    if e.mag.len() > 1 || bits_len(&a.mag) as u64 * e.mag[0] as u64 > MAX_BITS {
         return Err(vm.range_error("Maximum BigInt size exceeded"));
     }
     let mut result = alloc::vec![1u32];
@@ -312,7 +317,12 @@ pub fn binary(vm: &mut Vm, op: BinaryOp, a: Value, b: Value) -> JsResult<Value> 
     let r = match op {
         BinaryOp::Add => add(&x, &y),
         BinaryOp::Sub => add(&x, &neg(&y)),
-        BinaryOp::Mul => mk(x.neg != y.neg, mul_mag(&x.mag, &y.mag)),
+        BinaryOp::Mul => {
+            if (bits_len(&x.mag) + bits_len(&y.mag)) as u64 > MAX_BITS + 1 {
+                return Err(vm.range_error("Maximum BigInt size exceeded"));
+            }
+            mk(x.neg != y.neg, mul_mag(&x.mag, &y.mag))
+        }
         BinaryOp::Div | BinaryOp::Mod => {
             if y.mag.is_empty() {
                 return Err(vm.range_error("Division by zero"));
@@ -381,12 +391,25 @@ pub fn to_string_radix(b: &BigInt, radix: u32) -> String {
     if b.mag.is_empty() {
         return "0".into();
     }
+    // Divide by the largest power of the radix that fits a limb, so each
+    // pass over the number yields several digits.
+    let (mut chunk, mut per) = (radix, 1);
+    while (chunk as u64) * (radix as u64) <= u32::MAX as u64 {
+        chunk *= radix;
+        per += 1;
+    }
     let mut digits: Vec<char> = Vec::new();
     let mut m = b.mag.clone();
     while !m.is_empty() {
-        let (q, r) = divmod_small(&m, radix);
-        digits.push(core::char::from_digit(r, radix).unwrap());
+        let (q, mut r) = divmod_small(&m, chunk);
         m = q;
+        for _ in 0..per {
+            if m.is_empty() && r == 0 {
+                break;
+            }
+            digits.push(core::char::from_digit(r % radix, radix).unwrap());
+            r /= radix;
+        }
     }
     if b.neg {
         digits.push('-');
@@ -492,10 +515,17 @@ pub fn cmp(a: &BigInt, b: &BigInt) -> Ordering {
 }
 
 /// BigInt.asUintN / asIntN.
-fn as_n(vm: &mut Vm, bits: u64, b: &BigInt, signed: bool) -> BigInt {
-    let _ = vm;
+fn as_n(vm: &mut Vm, bits: u64, b: &BigInt, signed: bool) -> JsResult<BigInt> {
     if bits == 0 {
-        return BigInt::zero();
+        return Ok(BigInt::zero());
+    }
+    let len = bits_len(&b.mag) as u64;
+    // Already in range: nothing to wrap (also for huge `bits`).
+    if signed && len < bits || !signed && !b.neg && len <= bits {
+        return Ok(b.clone());
+    }
+    if bits > MAX_BITS {
+        return Err(vm.range_error("Maximum BigInt size exceeded"));
     }
     let n = bits as usize;
     let limbs = n.div_ceil(32) + 1;
@@ -515,9 +545,9 @@ fn as_n(vm: &mut Vm, bits: u64, b: &BigInt, signed: bool) -> BigInt {
     if signed && bits_len(&unsigned.mag) == n {
         // Top bit set: subtract 2^n.
         let two_n = shl_mag(&[1], n);
-        return mk(true, sub_mag(&two_n, &unsigned.mag));
+        return Ok(mk(true, sub_mag(&two_n, &unsigned.mag)));
     }
-    unsigned
+    Ok(unsigned)
 }
 
 // ----- the BigInt constructor -------------------------------------------
@@ -563,13 +593,13 @@ pub fn init(vm: &mut Vm) {
     vm.method(c, "asUintN", 2, |vm, _, a, _| {
         let bits = vm.to_index(arg(a, 0))?;
         let b = to_bigint(vm, arg(a, 1))?;
-        let r = as_n(vm, bits, &b, false);
+        let r = as_n(vm, bits, &b, false)?;
         Ok(alloc(vm, r))
     });
     vm.method(c, "asIntN", 2, |vm, _, a, _| {
         let bits = vm.to_index(arg(a, 0))?;
         let b = to_bigint(vm, arg(a, 1))?;
-        let r = as_n(vm, bits, &b, true);
+        let r = as_n(vm, bits, &b, true)?;
         Ok(alloc(vm, r))
     });
     fn this_bigint(vm: &mut Vm, v: Value) -> JsResult<Value> {

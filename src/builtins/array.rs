@@ -150,7 +150,7 @@ fn join(vm: &mut Vm, this: Value, a: &[Value], _: Value) -> JsResult<Value> {
                 let s = vm.to_string(e)?;
                 out.extend(vm.str(s).units());
             }
-            if out.len() > (1 << 29) {
+            if out.len() > vm.max_string_len() {
                 return Err(vm.range_error("Invalid string length"));
             }
         }
