@@ -274,6 +274,36 @@ impl<'a, 'v> Compiler<'a, 'v> {
     }
 
     /// acc = super[key] with `this` and the key in registers.
+    /// Compiles an expression whose value is not used.
+    pub fn expr_effect(&mut self, e: &'a Expr) -> CResult<()> {
+        match &e.kind {
+            ExprKind::Update(inc, false, target) => self.update(*inc, true, target),
+            ExprKind::Seq(xs) => {
+                for x in xs {
+                    self.expr_effect(x)?;
+                }
+                Ok(())
+            }
+            ExprKind::Paren(x) => self.expr_effect(x),
+            _ => self.expr(e),
+        }
+    }
+
+    /// The register of a local binding that can be read directly (no TDZ
+    /// check, not captured).
+    fn direct_reg(&self, e: &Expr) -> Option<Reg> {
+        let ExprKind::Ident(n) = &e.unparen().kind else { return None };
+        match self.resolve(n) {
+            Resolved::Reg(r, b) if !self.needs_tdz_pub(&b, e.pos) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// An expression that cannot change a register local while evaluated.
+    fn is_simple(e: &Expr) -> bool {
+        matches!(e.unparen().kind, ExprKind::Ident(_) | ExprKind::Num(_) | ExprKind::Str(_) | ExprKind::Null | ExprKind::Bool(_) | ExprKind::This)
+    }
+
     fn emit_get_super_keyed(&mut self, this_reg: Reg, key_reg: Reg) {
         self.emit(Op::Ldar(key_reg));
         self.emit(Op::GetSuperKeyed(this_reg));
@@ -504,10 +534,21 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 return Ok(());
             }
         }
-        self.expr(a)?;
-        let r = self.alloc_reg();
-        self.emit(Op::Star(r));
-        self.expr(b)?;
+        // `local OP simple`: use the local's register directly.
+        let direct = if Self::is_simple(b) { self.direct_reg(a) } else { None };
+        let r = match direct {
+            Some(r) => {
+                self.expr(b)?;
+                r
+            }
+            None => {
+                self.expr(a)?;
+                let r = self.alloc_reg();
+                self.emit(Op::Star(r));
+                self.expr(b)?;
+                r
+            }
+        };
         let o = match op {
             BinaryOp::Add => Op::Add(r),
             BinaryOp::Sub => Op::Sub(r),
@@ -534,7 +575,9 @@ impl<'a, 'v> Compiler<'a, 'v> {
         };
         self.pos(a.pos);
         self.emit(o);
-        self.free_to(r);
+        if direct.is_none() {
+            self.free_to(r);
+        }
         Ok(())
     }
 
@@ -543,7 +586,9 @@ impl<'a, 'v> Compiler<'a, 'v> {
         match &target.unparen().kind {
             ExprKind::Ident(n) => {
                 self.load_name(n, target.pos)?;
-                self.emit(Op::ToNumeric);
+                if !prefix {
+                    self.emit(Op::ToNumeric);
+                }
                 if prefix {
                     self.emit(step);
                     self.store_name(n, target.pos)?;
@@ -673,6 +718,12 @@ impl<'a, 'v> Compiler<'a, 'v> {
                 }
             },
             AssignOp::Op(bop) => match target {
+                Pattern::Ident(n, p) if Self::is_simple(value) && matches!(self.resolve(n), Resolved::Reg(_, ref b) if !self.needs_tdz_pub(b, *p) && matches!(b.kind, BKind::Var | BKind::Let | BKind::Param)) => {
+                    let Resolved::Reg(r, _) = self.resolve(n) else { unreachable!() };
+                    self.expr(value)?;
+                    self.emit(binop(bop, r));
+                    self.emit(Op::Star(r));
+                }
                 Pattern::Ident(n, p) => {
                     self.load_name(n, *p)?;
                     let r = self.alloc_reg();

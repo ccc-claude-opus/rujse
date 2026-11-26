@@ -14,9 +14,33 @@ pub type K = u32;
 /// Absolute instruction index.
 pub type Label = u32;
 
+/// Binary operators of the fused register instructions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinKind {
+    Add,
+    Sub,
+    Mul,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    StrictEq,
+    StrictNe,
+    BitAnd,
+    BitOr,
+    BitXor,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
     Nop,
+    /// dst = acc = lhs OP rhs (registers).
+    BinRR { kind: BinKind, dst: Reg, lhs: Reg, rhs: Reg },
+    /// acc = lhs CMP rhs; jumps if acc == when.
+    CmpJmp { kind: BinKind, lhs: Reg, rhs: Reg, target: Label, when: bool },
+    /// r = acc = r + 1 / r - 1 (with ToNumeric).
+    IncReg(Reg),
+    DecReg(Reg),
     // ----- accumulator / registers
     LdaUndef,
     LdaNull,

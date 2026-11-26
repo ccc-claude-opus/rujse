@@ -7,6 +7,7 @@
 
 mod expr;
 mod module;
+mod peephole;
 pub mod scan;
 
 pub use module::{ImportEntry, ModuleInfo};
@@ -491,6 +492,10 @@ impl<'a, 'v> Compiler<'a, 'v> {
         crossed || b.in_switch || pos.offset < b.init_end || self.in_loop_body_before(b)
     }
 
+    pub fn needs_tdz_pub(&self, b: &Binding, pos: Pos) -> bool {
+        self.needs_tdz(b, pos, false)
+    }
+
     fn in_loop_body_before(&self, _b: &Binding) -> bool {
         false
     }
@@ -614,7 +619,9 @@ impl<'a, 'v> Compiler<'a, 'v> {
         let f = self.f();
         for s in f.scopes.iter_mut().rev() {
             if let Some(b) = s.bindings.iter_mut().find(|b| &*b.name == name) {
-                b.init_end = end;
+                if !b.in_switch {
+                    b.init_end = end;
+                }
                 return;
             }
         }
@@ -649,9 +656,8 @@ impl<'a, 'v> Compiler<'a, 'v> {
     }
 
     fn finish(&mut self, name: Value, nparams: u16, length: u16, keep_args: bool, has_fields: bool, src: (u32, u32)) -> Rc<Code> {
-        let f = self.funcs.pop().unwrap();
-        // Handlers from the try regions, innermost first (they were
-        // finished inner-first).
+        let mut f = self.funcs.pop().unwrap();
+        peephole::optimize(&mut f.ops, &mut f.handlers, &mut f.lines);
         Rc::new(Code {
             ops: f.ops,
             consts: f.consts,
@@ -1489,9 +1495,11 @@ impl<'a, 'v> Compiler<'a, 'v> {
         self.pos(s.pos);
         match &s.kind {
             StmtKind::Expr(e) => {
-                self.expr(e)?;
                 if let Some(r) = result {
+                    self.expr(e)?;
                     self.emit(Op::Star(r));
+                } else {
+                    self.expr_effect(e)?;
                 }
             }
             StmtKind::Var(kind, decls) => self.var_decl(*kind, decls, s.pos)?,
@@ -1699,7 +1707,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                         self.assign_pattern(&d.target)?;
                     } else {
                         self.bind_pattern(&d.target, true)?;
-                        self.mark_initialized(&d.target, init.pos.offset);
+                        self.mark_initialized(&d.target, d.end);
                     }
                 }
                 None => {
@@ -1709,7 +1717,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
                     if kind != VarKind::Var {
                         self.emit(Op::LdaUndef);
                         self.bind_pattern(&d.target, true)?;
-                        self.mark_initialized(&d.target, 0);
+                        self.mark_initialized(&d.target, d.end);
                     }
                 }
             }
@@ -1717,7 +1725,15 @@ impl<'a, 'v> Compiler<'a, 'v> {
         Ok(())
     }
 
-    fn mark_initialized(&mut self, _p: &Pattern, _end: u32) {}
+    /// References after `end` (textually, in this function) see an
+    /// initialized binding: no TDZ check needed.
+    fn mark_initialized(&mut self, p: &Pattern, end: u32) {
+        let mut names = Vec::new();
+        crate::parser::bound_names(p, &mut names);
+        for (n, _) in names {
+            self.set_init_end(&n, end);
+        }
+    }
 
     /// A block statement with its lexical scope.
     pub fn block(&mut self, body: &'a [Stmt], result: Option<Reg>) -> CResult<()> {
@@ -1863,7 +1879,7 @@ impl<'a, 'v> Compiler<'a, 'v> {
             self.emit(Op::CloneEnv);
         }
         if let Some(u) = update {
-            self.expr(u)?;
+            self.expr_effect(u)?;
         }
         self.emit(Op::Jmp(top));
         if let Some(x) = exit {

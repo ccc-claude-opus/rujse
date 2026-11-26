@@ -45,6 +45,9 @@ pub enum VarKind {
 pub struct VarDecl {
     pub target: Pattern,
     pub init: Option<Expr>,
+    /// Byte offset just after the declarator (the binding is initialized
+    /// from here on).
+    pub end: u32,
 }
 
 #[derive(Debug)]

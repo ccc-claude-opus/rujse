@@ -810,7 +810,7 @@ impl<'a> Parser<'a> {
                 self.check_lexical_names(&target)?;
             }
             let init = if self.eat(P::Assign)? { Some(self.assignment(no_in)?) } else { None };
-            out.push(VarDecl { target, init });
+            out.push(VarDecl { target, init, end: self.prev_end });
             if !self.eat(P::Comma)? {
                 break;
             }

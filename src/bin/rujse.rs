@@ -36,6 +36,39 @@ fn main() {
                 }
             }
         }
+        "--bytecode" => {
+            let src = read(1);
+            let mut vm = rujse::Vm::new();
+            let prog = rujse::parser::Parser::parse_script(&src, false).expect("syntax error");
+            let source = vm.add_source("dump", src.as_str().into());
+            let code = rujse::compiler::Compiler::new(&mut vm, source).script(&prog, false).expect("compile error");
+            fn dump(c: &rujse::bytecode::Code, depth: usize) {
+                let pad = "  ".repeat(depth);
+                println!("{pad}== code nregs={} nparams={}", c.nregs, c.nparams);
+                for (i, op) in c.ops.iter().enumerate() {
+                    println!("{pad}{i:4} {op:?}");
+                }
+                for ch in &c.children {
+                    dump(ch, depth + 1);
+                }
+            }
+            dump(&code, 0);
+        }
+        "--phases" => {
+            let src = read(1);
+            let t0 = std::time::Instant::now();
+            let prog = rujse::parser::Parser::parse_script(&src, false).expect("syntax error");
+            let t1 = std::time::Instant::now();
+            let mut vm = rujse::Vm::new();
+            let t2 = std::time::Instant::now();
+            let source = vm.add_source("x", src.as_str().into());
+            let code = rujse::compiler::Compiler::new(&mut vm, source).script(&prog, false).expect("compile");
+            let t3 = std::time::Instant::now();
+            let this = rujse::Value::object(vm.global);
+            let r = vm.run_code(code, None, this, rujse::Value::UNDEFINED, rujse::Value::UNDEFINED);
+            let t4 = std::time::Instant::now();
+            println!("parse {:?} vm {:?} compile {:?} run {:?} ok={}", t1 - t0, t2 - t1, t3 - t2, t4 - t3, r.is_ok());
+        }
         "--ast" => {
             let src = read(1);
             match rujse::parser::Parser::parse_script(&src, false) {

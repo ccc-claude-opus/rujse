@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use super::props::PropDesc;
 use super::*;
-use crate::bytecode::{Const, FuncKind, Op};
+use crate::bytecode::{BinKind, Const, FuncKind, Op};
 use crate::object::{attr, Class, Closure, Key};
 
 /// How a generator frame left the interpreter.
@@ -310,6 +310,73 @@ impl Vm {
                 pc += 1;
                 match op {
                     Op::Nop => {}
+                    Op::BinRR { kind, dst, lhs, rhs } => {
+                        let (a, b) = (r!(lhs), r!(rhs));
+                        acc = match (a.as_int(), b.as_int(), kind) {
+                            (Some(x), Some(y), BinKind::Add) => match x.checked_add(y) {
+                                Some(v) => Value::int(v),
+                                None => Value::number(x as f64 + y as f64),
+                            },
+                            (Some(x), Some(y), BinKind::Sub) => match x.checked_sub(y) {
+                                Some(v) => Value::int(v),
+                                None => Value::number(x as f64 - y as f64),
+                            },
+                            (Some(x), Some(y), BinKind::Lt) => Value::bool(x < y),
+                            (Some(x), Some(y), BinKind::Le) => Value::bool(x <= y),
+                            (Some(x), Some(y), BinKind::Gt) => Value::bool(x > y),
+                            (Some(x), Some(y), BinKind::Ge) => Value::bool(x >= y),
+                            (Some(x), Some(y), BinKind::BitAnd) => Value::int(x & y),
+                            (Some(x), Some(y), BinKind::BitOr) => Value::int(x | y),
+                            (Some(x), Some(y), BinKind::BitXor) => Value::int(x ^ y),
+                            _ => {
+                                self.frames[fi].pc = pc as u32;
+                                tri!(self.bin_generic(kind, a, b))
+                            }
+                        };
+                        r!(dst) = acc;
+                    }
+                    Op::CmpJmp { kind, lhs, rhs, target, when } => {
+                        let (a, b) = (r!(lhs), r!(rhs));
+                        let t = match (a.as_int(), b.as_int()) {
+                            (Some(x), Some(y)) => match kind {
+                                BinKind::Lt => x < y,
+                                BinKind::Le => x <= y,
+                                BinKind::Gt => x > y,
+                                BinKind::Ge => x >= y,
+                                BinKind::StrictEq => x == y,
+                                _ => x != y,
+                            },
+                            _ => {
+                                self.frames[fi].pc = pc as u32;
+                                let v = tri!(self.bin_generic(kind, a, b));
+                                v == Value::TRUE
+                            }
+                        };
+                        acc = Value::bool(t);
+                        if t == when {
+                            if (target as usize) < pc {
+                                safepoint!();
+                            }
+                            pc = target as usize;
+                        }
+                    }
+                    Op::IncReg(x) | Op::DecReg(x) => {
+                        let v = r!(x);
+                        let up = matches!(op, Op::IncReg(_));
+                        acc = match v.as_int() {
+                            Some(i) if up && i < i32::MAX => Value::int(i + 1),
+                            Some(i) if !up && i > i32::MIN => Value::int(i - 1),
+                            _ => {
+                                let n = if v.is_number() || v.is_bigint() { v } else { tri!(self.to_numeric(v)) };
+                                if n.is_bigint() {
+                                    tri!(crate::builtins::bigint::add_int(self, n, if up { 1 } else { -1 }))
+                                } else {
+                                    Value::number(n.num() + if up { 1.0 } else { -1.0 })
+                                }
+                            }
+                        };
+                        r!(x) = acc;
+                    }
                     Op::LdaUndef => acc = Value::UNDEFINED,
                     Op::LdaNull => acc = Value::NULL,
                     Op::LdaTrue => acc = Value::TRUE,
@@ -777,6 +844,9 @@ impl Vm {
                     }
                     Op::InstanceOf(x) => acc = Value::bool(tri!(self.instance_of(r!(x), acc))),
                     Op::Inc => {
+                        if !acc.is_number() && !acc.is_bigint() {
+                            acc = tri!(self.to_numeric(acc));
+                        }
                         acc = match acc.as_int() {
                             Some(i) if i < i32::MAX => Value::int(i + 1),
                             _ => {
@@ -789,6 +859,9 @@ impl Vm {
                         }
                     }
                     Op::Dec => {
+                        if !acc.is_number() && !acc.is_bigint() {
+                            acc = tri!(self.to_numeric(acc));
+                        }
                         acc = match acc.as_int() {
                             Some(i) if i > i32::MIN => Value::int(i - 1),
                             _ => {
@@ -1183,6 +1256,25 @@ impl Vm {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    /// The generic path of a fused binary instruction.
+    fn bin_generic(&mut self, kind: BinKind, a: Value, b: Value) -> JsResult<Value> {
+        use crate::ast::BinaryOp as B;
+        Ok(match kind {
+            BinKind::Add => self.op_add(a, b)?,
+            BinKind::Sub => self.binary_arith(B::Sub, a, b)?,
+            BinKind::Mul => self.binary_arith(B::Mul, a, b)?,
+            BinKind::BitAnd => self.binary_arith(B::BitAnd, a, b)?,
+            BinKind::BitOr => self.binary_arith(B::BitOr, a, b)?,
+            BinKind::BitXor => self.binary_arith(B::BitXor, a, b)?,
+            BinKind::Lt => Value::bool(self.less_than(a, b, true)? == Some(true)),
+            BinKind::Gt => Value::bool(self.less_than(b, a, false)? == Some(true)),
+            BinKind::Le => Value::bool(self.less_than(b, a, false)? == Some(false)),
+            BinKind::Ge => Value::bool(self.less_than(a, b, true)? == Some(false)),
+            BinKind::StrictEq => Value::bool(self.strict_equals(a, b)),
+            BinKind::StrictNe => Value::bool(!self.strict_equals(a, b)),
+        })
     }
 
     // ----- calls inside the interpreter -------------------------------
