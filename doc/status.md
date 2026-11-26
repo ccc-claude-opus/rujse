@@ -29,8 +29,16 @@
 | M4 rubrowser 導入 | 完成：rubrowser 的 `js-runtime-rujse` feature 與 `--features rujse`，242 個函式庫測試（含全部 JS 測試）通過；prelude 以 bytecode cache 載入。未做：100 MB 上傳只有一份資料的驗證 |
 | M5 直譯器效能 | 大部分完成：inline cache（全域、具名屬性、shape 轉移）、int32 與 double 快路徑、超指令、rope、bytecode cache。未做：heap snapshot |
 | M6 除錯與檢視 | rujse 的 API 完成；rubrowser 的 CDP 對接未做 |
-| M7 符合度 | test262 ≥ 97% 達成；fuzz 與 node 差分測試未做 |
+| M7 符合度 | test262 97.25%；`tools/fuzz`（突變 test262 檔案，抓 panic、超量配置與洩漏）已跑約 300 萬次無錯，沿途修掉的問題見下方；24 小時連續 fuzz 與 node 差分測試未做 |
 | M8–M10 | 未開始 |
+
+## 資源上限（fuzz 找到並修正的）
+
+在瀏覽器裡 panic 或吃光記憶體都等於整個 JS runtime 掛掉，所以這些都當成錯誤處理：
+
+* heap 上限原本只在安全點檢查：原生函式裡的迴圈（`fill`、`repeat`、`join`、`replace` 的 `$1`、`reduceRight` 走過 2⁵³ 個索引、對無窮迭代器做 `[...x]`）可以一次配置數 GB。現在字串長度受 `Vm::max_string_len()`（2²⁹ 或 heap 上限能容納的長度）限制；元素、Map/Set 條目、atom 都計入配置量；Rust 呼叫 JS、迭代器每一步、泛用的屬性存取都會計 tick 並檢查預算、中斷與配置量（不做 GC，原生函式持有未 root 的值）。
+* BigInt 上限 2²⁰ 位元（與 SpiderMonkey 相同），`asIntN/asUintN` 不再配置整個遮罩，`toString` 快約 9 倍。
+* AST：`Stmt` 由 224 降到 112 bytes，Scanner 不快取空的區域（`eval` 200 萬個 `{}` 由 460 MB 降到 232 MB）。
 
 ## 每個 op 的底線
 
